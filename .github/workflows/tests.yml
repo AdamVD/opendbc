@@ -33,10 +33,19 @@ jobs:
     - uses: actions/checkout@v4
       with:
         path: opendbc_repo
-    - name: Build openpilot
-      run: scons -j$(nproc) common/ cereal/ selfdrive/pandad/ sunnypilot/ msgq_repo/ opendbc_repo
-    - name: ./test.sh
-      run: ./test.sh
+    - name: Build host openpilot
+      run: |
+        source .venv/bin/activate
+        scons -j$(python -c 'import os; print(os.cpu_count() or 1)') common/ cereal/ selfdrive/pandad/ sunnypilot/ msgq_repo/ opendbc_repo
+    - name: Run opendbc tests in host env
+      run: |
+        cd opendbc_repo
+        export UV_PROJECT_ENVIRONMENT="$GITHUB_WORKSPACE/.venv"
+        uv sync --all-extras --inexact
+        source "$UV_PROJECT_ENVIRONMENT/bin/activate"
+        uv lock --check
+        scons -j$(python -c 'import os; print(os.cpu_count() or 1)')
+        lefthook run test
 
   safety_tests:
     name: safety
