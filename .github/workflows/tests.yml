@@ -40,7 +40,11 @@ jobs:
     - name: Run opendbc tests in host env
       run: |
         cd opendbc_repo
-        ./test.sh
+        export UV_PROJECT_ENVIRONMENT="$GITHUB_WORKSPACE/.venv"
+        uv sync --all-extras --inexact
+        source "$UV_PROJECT_ENVIRONMENT/bin/activate"
+        uv lock --check
+        lefthook run test
 
   safety_tests:
     name: safety
