@@ -1,4 +1,4 @@
-import numpy as np
+import numpy as np force ci to fail
 import math
 from openpilot.common.params import Params
 
