@@ -94,7 +94,7 @@ class CarInterface(CarInterfaceBase):
     else:
       # default longitudinal tuning for all Nidec hondas
       ret.longitudinalTuning.kiBP = [0., 5., 35.]
-      ret.longitudinalTuning.kiV = [1.2, 0.8, 0.5]
+      ret.longitudinalTuning.kiV = [0.7, 0.5, 0.3]  # reduced ~40% from [1.2, 0.8, 0.5] to damp longitudinal oscillation on NIDEC (Odyssey)
 
     if candidate == CAR.HONDA_CITY_7G:
       ret.vEgoStopping = 2.0
