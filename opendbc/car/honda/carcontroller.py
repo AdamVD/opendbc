@@ -149,6 +149,8 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.last_torque = 0.0
     self.bosch_last_gas = 0
 
+    self.last_pcm_off = 0.0  # for rate-limiting in model-based NIDEC FF
+
     self.gasfactor = 1.0 if (Params().get("HondaGasFactorParams") is None) else Params().get("HondaGasFactorParams")
     self.gasfactor_before_maxgas = self.gasfactor
     self.windfactor = 1.0 if (Params().get("HondaWindFactorParams") is None) else Params().get("HondaWindFactorParams")
@@ -235,12 +237,18 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     if self.CP_SP.enableGasInterceptor or not CC.longActive:
       pcm_speed = 0.0
       pcm_accel = int(0.0)
+      self.last_pcm_off = 0.0
     elif self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
-      pcm_speed_V = [0.0,
-                     np.clip(CS.out.vEgo - 3.0, 0.0, 100.0),
-                     np.clip(CS.out.vEgo + 0.0, 0.0, 100.0),
-                     np.clip(CS.out.vEgo + 5.0, 0.0, 100.0)]
-      pcm_speed = float(np.interp(gas - brake, pcm_speed_BP, pcm_speed_V))
+      # Model-based feedforward: invert the identified plant aego = K(v)*pcm_off - g*sin(pitch)
+      # so pcm_off = (accel_desired + hill_brake) / K(v), giving correct gain and full grade FF
+      K_v = float(np.clip(self.params.NIDEC_MODEL_K0 - self.params.NIDEC_MODEL_K1 * CS.out.vEgo,
+                          self.params.NIDEC_MODEL_K_MIN, self.params.NIDEC_MODEL_K_MAX))
+      a_des = actuators.accel + hill_brake
+      pcm_off = float(np.clip(a_des / K_v, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
+      pcm_off = rate_limit(pcm_off, self.last_pcm_off,
+                           -self.params.NIDEC_MODEL_RATE * DT_CTRL, self.params.NIDEC_MODEL_RATE * DT_CTRL)
+      self.last_pcm_off = pcm_off
+      pcm_speed = float(np.clip(CS.out.vEgo + pcm_off, 0.0, 100.0))
       pcm_accel = int(1.0 * self.params.NIDEC_GAS_MAX)
     elif (self.CP.carFingerprint in (CAR.ACURA_MDX_3G, CAR.ACURA_MDX_3G_MMR)):
       pcm_speed_V = [0.0,

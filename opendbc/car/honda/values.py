@@ -29,6 +29,17 @@ class CarControllerParams:
   NIDEC_GAS_MAX = 198  # 0xc6
   NIDEC_BRAKE_MAX = 1024 // 4
 
+  # Model-based longitudinal feedforward for NIDEC_ALT_PCM_ACCEL (Odyssey)
+  # Plant: aego = K(v) * pcm_off - g*sin(pitch),  K(v) = K0 - K1*v
+  # Identified from ~302 min of 2018 Odyssey logs (install e3652ba0)
+  NIDEC_MODEL_K0 = 0.178        # plant gain at 0 m/s (1/s)
+  NIDEC_MODEL_K1 = 0.0022       # velocity coefficient (1/s per m/s)
+  NIDEC_MODEL_K_MIN = 0.08      # lower clamp on K(v)
+  NIDEC_MODEL_K_MAX = 0.20      # upper clamp on K(v)
+  NIDEC_MODEL_PCM_OFF_MAX = 5.0 # max pcm_speed offset from vEgo (m/s) — Tier-1 limit
+  NIDEC_MODEL_PCM_OFF_MIN = -8.0
+  NIDEC_MODEL_RATE = 6.0        # pcm_off rate limit (m/s per s)
+
   BOSCH_ACCEL_MIN = -3.5  # m/s^2
   BOSCH_ACCEL_MAX = 2.0  # m/s^2
 

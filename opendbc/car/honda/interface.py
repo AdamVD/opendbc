@@ -5,7 +5,8 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.honda.hondacan import CanBus
 from opendbc.car.honda.values import CarControllerParams, HondaFlags, CAR, HONDA_BOSCH, HONDA_BOSCH_CANFD, \
-                                                 HONDA_NIDEC_ALT_SCM_MESSAGES, HONDA_BOSCH_RADARLESS, HondaSafetyFlags
+                                                 HONDA_NIDEC_ALT_SCM_MESSAGES, HONDA_BOSCH_RADARLESS, HondaSafetyFlags, \
+                                                 HONDA_NIDEC_ALT_PCM_ACCEL
 from opendbc.car.honda.carcontroller import CarController
 from opendbc.car.honda.carstate import CarState
 from opendbc.car.honda.radar_interface import RadarInterface
@@ -32,7 +33,15 @@ class CarInterface(CarInterfaceBase):
     else:
       # NIDECs don't allow acceleration near cruise_speed,
       # so limit limits of pid to prevent windup
-      ACCEL_MAX_VALS = [CarControllerParams.NIDEC_ACCEL_MAX, 0.2]
+      if CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
+        # Clamp to gas-channel authority: integrator can't charge past what pcm_off can deliver
+        K_v = float(np.clip(CarControllerParams.NIDEC_MODEL_K0 - CarControllerParams.NIDEC_MODEL_K1 * current_speed,
+                            CarControllerParams.NIDEC_MODEL_K_MIN, CarControllerParams.NIDEC_MODEL_K_MAX))
+        gas_accel_max = K_v * CarControllerParams.NIDEC_MODEL_PCM_OFF_MAX
+        accel_max_hard = min(CarControllerParams.NIDEC_ACCEL_MAX, gas_accel_max)
+      else:
+        accel_max_hard = CarControllerParams.NIDEC_ACCEL_MAX
+      ACCEL_MAX_VALS = [accel_max_hard, 0.2]
       ACCEL_MAX_BP = [cruise_speed - 2., cruise_speed - .2]
       return CarControllerParams.NIDEC_ACCEL_MIN, np.interp(current_speed, ACCEL_MAX_BP, ACCEL_MAX_VALS)
 
@@ -94,7 +103,7 @@ class CarInterface(CarInterfaceBase):
     else:
       # default longitudinal tuning for all Nidec hondas
       ret.longitudinalTuning.kiBP = [0., 5., 35.]
-      ret.longitudinalTuning.kiV = [0.7, 0.5, 0.3]  # reduced ~40% from [1.2, 0.8, 0.5] to damp longitudinal oscillation on NIDEC (Odyssey)
+      ret.longitudinalTuning.kiV = [0.40, 0.28, 0.17]  # ~1/3 of on-device original [1.2,0.8,0.5]; required with model-based FF (stability cliff at kiV[0]≈0.48)
 
     if candidate == CAR.HONDA_CITY_7G:
       ret.vEgoStopping = 2.0
