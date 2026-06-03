@@ -37,15 +37,16 @@ class CarControllerParams:
   NIDEC_MODEL_K_MIN = 0.08      # lower clamp on K(v)
   NIDEC_MODEL_K_MAX = 0.20      # upper clamp on K(v)
   NIDEC_MODEL_PCM_OFF_MAX = 5.0  # max pcm_speed offset above vEgo (m/s) — Tier-1 limit
-  NIDEC_MODEL_PCM_OFF_MIN = 0.0  # clamp: never send pcm_speed below vEgo. The deployed -8.0 let
-                                 # pcm_off crater on any decel -> ACC setpoint far below speed ->
-                                 # ~1.3s gas dead-zone on recovery -> brake/surge limit cycle
-                                 # (34 cycles in the 2026-06-02 drive). At 0, hard decel still works
-                                 # (direct brake channel, unchanged). WATCH on-car: gentle decels
-                                 # (a_des in [-0.63,0]) get ~0 from the brake channel (wind_brake
-                                 # subtraction) and the ACC holds at pcm_off=0, so the gentle band
-                                 # may feel under-damped/late; if so, a shallow floor (~-1.5) keeps
-                                 # gentle throttle-closing while still capping the crater.
+  NIDEC_MODEL_PCM_OFF_MIN = -1.5 # floor for pcm_speed offset below vEgo (m/s). At 0.0, Honda ACC
+                                 # sat at pcm_speed=vEgo and applied throttle to hold speed while the
+                                 # direct brake channel fought it — confirmed from 2026-06-03 drive:
+                                 # 5311/5311 braking samples were gas+brake conflicts (33% of active
+                                 # time), including 2591 on flat ground behind a lead car, max brake
+                                 # 0.40. At -1.5, pcm_speed trails vEgo during decel so Honda ACC
+                                 # idles/engine-brakes instead of fighting. Recovery to gas: 0.25s
+                                 # (vs 1.3s at the deployed -8.0). Watch: ~0.25s pickup hesitation
+                                 # after following a lead; raise NIDEC_MODEL_RATE or reduce |MIN|
+                                 # if it shows up.
   NIDEC_MODEL_RATE = 6.0        # pcm_off rate limit (m/s per s)
   # Grade feed-forward gain for the gas-side pcm_off ONLY. At the FF's operating point (small
   # pcm_off, near speed-hold) the Honda ACC's internal speed loop rejects most grade, so the
