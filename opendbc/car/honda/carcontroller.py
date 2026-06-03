@@ -239,11 +239,18 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       pcm_accel = int(0.0)
       self.last_pcm_off = 0.0
     elif self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
-      # Model-based feedforward: invert the identified plant aego = K(v)*pcm_off - g*sin(pitch)
-      # so pcm_off = (accel_desired + hill_brake) / K(v), giving correct gain and full grade FF
+      # Model-based feedforward (accel only): invert the identified plant aego = K(v)*pcm_off - g*sin(pitch)
+      # so pcm_off = (accel_desired + hill_brake) / K(v) — clamped to [0, PCM_OFF_MAX].
+      # Negative side is clamped at 0 (pcm_speed = vEgo): Honda ACC actively brakes for large
+      # negative offsets; all decel is handled by the direct brake channel below.
       K_v = float(np.clip(self.params.NIDEC_MODEL_K0 - self.params.NIDEC_MODEL_K1 * CS.out.vEgo,
                           self.params.NIDEC_MODEL_K_MIN, self.params.NIDEC_MODEL_K_MAX))
-      a_des = actuators.accel + hill_brake
+      # Grade FF for the gas setpoint uses the EFFECTIVE grade gain (g_eff ~= 2.2), not full g:
+      # the Honda ACC self-rejects most grade, so full-g here over-cuts gas on downhills (droop).
+      # The direct brake channel (compute_gas_brake above) keeps full hill_brake for steep-grade
+      # speed holding.
+      hill_brake_ff = math.sin(self.pitch) * self.params.NIDEC_MODEL_GRADE_G
+      a_des = actuators.accel + hill_brake_ff
       pcm_off = float(np.clip(a_des / K_v, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
       pcm_off = rate_limit(pcm_off, self.last_pcm_off,
                            -self.params.NIDEC_MODEL_RATE * DT_CTRL, self.params.NIDEC_MODEL_RATE * DT_CTRL)
