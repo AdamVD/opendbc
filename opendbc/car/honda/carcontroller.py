@@ -176,12 +176,23 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     if len(CC.orientationNED) == 3:
       self.pitch = CC.orientationNED[1]
     hill_brake = math.sin(self.pitch) * ACCELERATION_DUE_TO_GRAVITY
+    # For NIDEC_ALT (Odyssey): Honda ACC self-rejects most grade, so the effective grade
+    # leakage at the FF operating point is ~2.2 m/s^2, not 9.81. Use this for BOTH the
+    # pcm_off gas path and the direct brake path so they stay mutually exclusive and
+    # neither over-compensates for grade (see NIDEC_MODEL_GRADE_G in values.py).
+    hill_brake_ff = math.sin(self.pitch) * self.params.NIDEC_MODEL_GRADE_G
 
     if CC.longActive:
       accel = actuators.accel
       if (self.CP.carFingerprint in (CAR.ACURA_MDX_3G, CAR.ACURA_MDX_3G_MMR)) and (accel > max(0, CS.out.aEgo) + 0.1):
         accel = 10000.0 # help with lagged accel until pedal tuning is inserted
-      gas, brake = compute_gas_brake(actuators.accel + hill_brake, CS.out.vEgo, self.CP.carFingerprint)
+      if self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
+        # Use effective grade (2.2g) matching the pcm_off calculation below, so direct
+        # brake and ACC gas setpoint use the same signal — prevents Honda ACC fighting
+        # direct brake on downhills (gas+brake conflict).
+        gas, brake = compute_gas_brake(actuators.accel + hill_brake_ff, CS.out.vEgo, self.CP.carFingerprint)
+      else:
+        gas, brake = compute_gas_brake(actuators.accel + hill_brake, CS.out.vEgo, self.CP.carFingerprint)
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
@@ -245,12 +256,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       # negative offsets; all decel is handled by the direct brake channel below.
       K_v = float(np.clip(self.params.NIDEC_MODEL_K0 - self.params.NIDEC_MODEL_K1 * CS.out.vEgo,
                           self.params.NIDEC_MODEL_K_MIN, self.params.NIDEC_MODEL_K_MAX))
-      # Grade FF for the gas setpoint uses the EFFECTIVE grade gain (g_eff ~= 2.2), not full g:
-      # the Honda ACC self-rejects most grade, so full-g here over-cuts gas on downhills (droop).
-      # The direct brake channel (compute_gas_brake above) keeps full hill_brake for steep-grade
-      # speed holding.
-      hill_brake_ff = math.sin(self.pitch) * self.params.NIDEC_MODEL_GRADE_G
-      a_des = actuators.accel + hill_brake_ff
+      a_des = actuators.accel + hill_brake_ff  # hill_brake_ff shared with direct-brake path (computed above)
       pcm_off = float(np.clip(a_des / K_v, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
       pcm_off = rate_limit(pcm_off, self.last_pcm_off,
                            -self.params.NIDEC_MODEL_RATE * DT_CTRL, self.params.NIDEC_MODEL_RATE * DT_CTRL)
@@ -341,6 +347,11 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
+          # Guardrail: never apply direct brake while ACC is requesting above-vEgo gas (pcm_off>0).
+          # Normally unreachable after the 2.2g brake fix (pcm_off and brake are mutually exclusive),
+          # but rate-limit lag and low-speed creep-brake can create simultaneous signals.
+          if self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL and self.last_pcm_off > 0:
+            apply_brake = 0
           pump_on, self.last_pump_ts = brake_pump_hysteresis(apply_brake, self.apply_brake_last, self.last_pump_ts, ts)
 
           pcm_override = True
