@@ -107,10 +107,12 @@ class CarInterface(CarInterfaceBase):
       # kp was 0 (integral-only). The Honda NIDEC ACC speed loop (pcm_off->aego) is UNDERDAMPED/RESONANT
       # at its pole 1/K (~8.5s, peak gain ~2*K, log freq-response coh 0.86); the inverse-model FF assumes
       # flat gain K so it doesn't cancel the resonance -> lead-follow self-oscillation at ~9s behind even a
-      # steady lead. kp adds derivative-like damping on the resonant speed loop. Validated in a real-MPC
-      # closed-loop sim (kp 0.15 -> ~-90% oscillation); noise injection negligible (aEgo HF std ~0.05).
+      # steady lead. kp adds derivative-like damping on the resonant speed loop. The closed-loop sim
+      # predicted kp 0.15 -> ~-90%, but the sim omits ~0.5-0.9s CAN/actuator delay so it OVER-predicts:
+      # on-car kp 0.15 gave ~-28% (vEgo band-pass 0.80->0.58 m/s, 2026-06-06 drives 17/18). Nudged to
+      # 0.18 for a bit more damping; the main resonance lever is now X_EGO_OBSTACLE_COST (follow-loop gain).
       ret.longitudinalTuning.kpBP = [0., 5., 35.]
-      ret.longitudinalTuning.kpV = [0.15, 0.15, 0.15]
+      ret.longitudinalTuning.kpV = [0.18, 0.18, 0.18]
 
     if candidate == CAR.HONDA_CITY_7G:
       ret.vEgoStopping = 2.0
