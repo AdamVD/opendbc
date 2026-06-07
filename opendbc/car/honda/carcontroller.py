@@ -352,7 +352,10 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
                                                         self.stopping_counter, self.CP.carFingerprint, gas_pedal_force))
         else:
-          apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
+          # Scale the aero-drag offset to the Odyssey's measured (smaller) coastdown so the
+          # friction brake picks up where the gas-side ACC saturates (~-0.33 m/s2), instead of
+          # the generic wind_brake holding it off until ~-0.46. Closes the moderate-decel dead-band.
+          apply_brake = np.clip(self.brake_last - wind_brake * self.params.NIDEC_BRAKE_WIND_FACTOR, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
           # Guardrail: never apply direct brake while ACC is requesting above-vEgo gas (pcm_off>0).
           # Normally unreachable after the 2.2g brake fix (pcm_off and brake are mutually exclusive),

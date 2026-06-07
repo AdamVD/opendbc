@@ -28,6 +28,16 @@ class CarControllerParams:
 
   NIDEC_GAS_MAX = 198  # 0xc6
   NIDEC_BRAKE_MAX = 1024 // 4
+  # Brake-side scale on the wind_brake (aero-drag) offset. The generic wind_brake (~0.10-0.15)
+  # overstates the 2018 Odyssey's true coastdown (measured from rlog: aego -0.26 m/s2 @50mph,
+  # -0.37 @65mph -> brake-fraction 0.054-0.077, i.e. ~1.5-1.8x smaller than wind_brake). A heavy
+  # but aerodynamic minivan coasts down LESS than the blank-average profile (low Cd*A / high mass),
+  # so the generic offset holds the friction brake off too long, leaving a dead-band between the
+  # gas-side ACC saturation (~-0.33 m/s2) and brake onset (~-0.46). Scaling the brake-side offset
+  # to match measured coast moves brake onset to ~-0.28, closing that dead-band ("corner too hot")
+  # and improving downhill decel delivery (+~88% brake) which also reduces integrator-windup droop.
+  # Gas side is unchanged; the pcm_off>0 guardrail keeps it conflict-safe. Lower = more brake.
+  NIDEC_BRAKE_WIND_FACTOR = 0.6
 
   # Model-based longitudinal feedforward for NIDEC_ALT_PCM_ACCEL (Odyssey)
   # Plant: aego = K(v) * pcm_off - g*sin(pitch),  K(v) = K0 - K1*v
