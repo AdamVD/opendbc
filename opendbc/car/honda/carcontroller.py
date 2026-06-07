@@ -250,14 +250,21 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       pcm_accel = int(0.0)
       self.last_pcm_off = 0.0
     elif self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
-      # Model-based feedforward (accel only): invert the identified plant aego = K(v)*pcm_off - g*sin(pitch)
-      # so pcm_off = (accel_desired + hill_brake) / K(v) — clamped to [0, PCM_OFF_MAX].
-      # Negative side is clamped at 0 (pcm_speed = vEgo): Honda ACC actively brakes for large
-      # negative offsets; all decel is handled by the direct brake channel below.
+      # Model-based feedforward: invert the identified plant aego = K(v)*pcm_off - g*sin(pitch),
+      # so pcm_off = (accel + hill_brake) / K(v), clamped to [PCM_OFF_MIN, PCM_OFF_MAX].
+      # ASYMMETRIC gain: accel side uses the full 1/K (strong throttle authority = the "oomph");
+      # decel side uses 1/(K*DECEL_SOFT). Honda's ACC throttle only modulates over pcm_off [0,-1.5]
+      # (coast/engine-brake, saturating ~-0.3 m/s2; it does NOT friction-brake), so the symmetric
+      # high gain slammed the throttle shut for any small ease-off — a relay/cliff that feeds the
+      # lead-follow oscillation. The softer decel gain grades the lift-off. pcm_off stays <=0 on any
+      # decel (a_des<0 -> pcm_off<0), so the ACC never pushes gas against the direct brake; hard
+      # decel still reaches the -1.5 floor where the brake channel handles it.
       K_v = float(np.clip(self.params.NIDEC_MODEL_K0 - self.params.NIDEC_MODEL_K1 * CS.out.vEgo,
                           self.params.NIDEC_MODEL_K_MIN, self.params.NIDEC_MODEL_K_MAX))
       a_des = actuators.accel + hill_brake_ff  # hill_brake_ff shared with direct-brake path (computed above)
-      pcm_off = float(np.clip(a_des / K_v, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
+      # effective inverse-gain: full K on accel, K*DECEL_SOFT on decel (gentler, graded lift-off)
+      K_eff = K_v * (self.params.NIDEC_MODEL_DECEL_SOFT if a_des < 0.0 else 1.0)
+      pcm_off = float(np.clip(a_des / K_eff, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
       pcm_off = rate_limit(pcm_off, self.last_pcm_off,
                            -self.params.NIDEC_MODEL_RATE * DT_CTRL, self.params.NIDEC_MODEL_RATE * DT_CTRL)
       self.last_pcm_off = pcm_off

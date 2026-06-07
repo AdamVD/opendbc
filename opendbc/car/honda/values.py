@@ -47,6 +47,20 @@ class CarControllerParams:
                                  # (vs 1.3s at the deployed -8.0). Watch: ~0.25s pickup hesitation
                                  # after following a lead; raise NIDEC_MODEL_RATE or reduce |MIN|
                                  # if it shows up.
+  NIDEC_MODEL_DECEL_SOFT = 2.0   # decel-side gain softener (asymmetric map). The inverse-model
+                                 # pcm_off=a_des/K uses the full 1/K gain (~7.7) for accel (the "oomph"),
+                                 # but applied symmetrically it slams pcm_off to the PCM_OFF_MIN floor for
+                                 # any ease-off past a_des~-0.2 — a relay/cliff (66% of ease-off samples
+                                 # floored; confirmed NEW with the 2026-06-02 gain increase vs the old
+                                 # map's graded lift-off). Honda's ACC throttle only modulates over pcm_off
+                                 # [0,-1.5] (coast/engine-brake, saturating ~-0.3 m/s2; it does NOT friction
+                                 # brake), so the decel side needs far less gain. Dividing the decel-side
+                                 # gain by this restores a graded lift-off (reaches the floor near a_des
+                                 # -0.4) and removes the relay that feeds the lead-follow oscillation, while
+                                 # keeping full accel gain and the -1.5 floor. pcm_off stays <=0 on decel so
+                                 # the ACC never fights the brake; hard decel still floors + brakes unchanged.
+                                 # 1.0 = symmetric (old cliff); ~2 grades it; >~3 erodes decel response
+                                 # margin on a slowing lead. Tune on-car.
   NIDEC_MODEL_RATE = 6.0        # pcm_off rate limit (m/s per s)
   # Grade feed-forward gain for the gas-side pcm_off ONLY. At the FF's operating point (small
   # pcm_off, near speed-hold) the Honda ACC's internal speed loop rejects most grade, so the
