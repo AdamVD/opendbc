@@ -46,7 +46,14 @@ class CarControllerParams:
   NIDEC_MODEL_K1 = 0.0022       # velocity coefficient (1/s per m/s)
   NIDEC_MODEL_K_MIN = 0.08      # lower clamp on K(v)
   NIDEC_MODEL_K_MAX = 0.20      # upper clamp on K(v)
-  NIDEC_MODEL_PCM_OFF_MAX = 5.0  # max pcm_speed offset above vEgo (m/s) — Tier-1 limit
+  NIDEC_MODEL_PCM_OFF_MAX = 8.0  # max pcm_speed offset above vEgo (m/s). Bump-test value (Tier-2,
+                                 # EXTRAPOLATED beyond logged data which only covered pcm_off<=5): from
+                                 # the tuning dashboard a constant pcm_off=+5 (the prior cap) delivered
+                                 # only ~0.65 m/s2 and tracked parallel to vEgo 50->74 mph, confirming the
+                                 # CAP (not gain) is the dominant accel limiter and plant K is ~speed-flat.
+                                 # Deliverable_max = K*5 ~= 0.5-0.65, far below the ~1.6 target. At 8.0
+                                 # deliverable ~= K*8 ~= 0.8-1.0. The sustained +8 rail (cmd not feedback-
+                                 # chosen) also serves as a clean rail-K read for the next ship decision.
   NIDEC_MODEL_PCM_OFF_MIN = -1.5 # floor for pcm_speed offset below vEgo (m/s). At 0.0, Honda ACC
                                  # sat at pcm_speed=vEgo and applied throttle to hold speed while the
                                  # direct brake channel fought it — confirmed from 2026-06-03 drive:
