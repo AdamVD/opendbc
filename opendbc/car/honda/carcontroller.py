@@ -187,10 +187,28 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       if (self.CP.carFingerprint in (CAR.ACURA_MDX_3G, CAR.ACURA_MDX_3G_MMR)) and (accel > max(0, CS.out.aEgo) + 0.1):
         accel = 10000.0 # help with lagged accel until pedal tuning is inserted
       if self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
-        # Use effective grade (2.2g) matching the pcm_off calculation below, so direct
-        # brake and ACC gas setpoint use the same signal — prevents Honda ACC fighting
-        # direct brake on downhills (gas+brake conflict).
-        gas, brake = compute_gas_brake(actuators.accel + hill_brake_ff, CS.out.vEgo, self.CP.carFingerprint)
+        # Two-plant fix (FINDINGS_channel_plants_2026-06-09): the PCM servo self-rejects grade ONLY
+        # while its throttle is active (g_eff ~2.2, NIDEC_MODEL_GRADE_G). As the request goes to decel
+        # the throttle closes and gravity acts in full (9.81) — uphill mild-decel must lift LESS
+        # (gravity already brakes; was the uphill over-decel/lead-oscillation), downhill braking must
+        # brake MORE (was the under-brake + integrator-windup droop). Blend continuously on the decel
+        # request to avoid chatter. The pcm_off path below uses the SAME blended hill term, preserving
+        # gas-vs-brake mutual exclusivity (friction starts exactly where PCM authority ends).
+        w_passive = float(np.clip((-actuators.accel - self.params.NIDEC_MODEL_GRADE_BLEND_LO) /
+                                  (self.params.NIDEC_MODEL_GRADE_BLEND_HI - self.params.NIDEC_MODEL_GRADE_BLEND_LO),
+                                  0.0, 1.0))
+        g_blend = self.params.NIDEC_MODEL_GRADE_G + (ACCELERATION_DUE_TO_GRAVITY - self.params.NIDEC_MODEL_GRADE_G) * w_passive
+        hill_brake_ff = math.sin(self.pitch) * g_blend
+        # Honest Plant-B friction demand: cover decel beyond engine-brake + TRUE aero coastdown, scaled
+        # by the MEASURED brake plant (3.07 m/s^2 at full apply_brake, not compute_gas_brake's 4.8).
+        # Replaces both the /4.8 map and the downstream wind_brake subtraction (which together
+        # under-commanded the brake ~2x on flat ground; droop deficit decomposition +0.95 m/s^2).
+        wind_ms2 = float(np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441]))
+        a_des_b = actuators.accel + hill_brake_ff
+        friction_ms2 = max(0.0, -a_des_b - self.params.NIDEC_MODEL_ENGINE_BRAKE - wind_ms2)
+        creep_brake = ((2.3 - CS.out.vEgo) / 2.3 * 0.15) if CS.out.vEgo < 2.3 else 0.0  # legacy stop-hold
+        brake = float(np.clip(friction_ms2 / self.params.NIDEC_MODEL_BRAKE_PLANT + creep_brake, 0.0, 1.0))
+        gas = float(np.clip(actuators.accel / 4.8, 0.0, 1.0))  # legacy gas frac (unused on this path)
       else:
         gas, brake = compute_gas_brake(actuators.accel + hill_brake, CS.out.vEgo, self.CP.carFingerprint)
     else:
@@ -355,7 +373,12 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           # Scale the aero-drag offset to the Odyssey's measured (smaller) coastdown so the
           # friction brake picks up where the gas-side ACC saturates (~-0.33 m/s2), instead of
           # the generic wind_brake holding it off until ~-0.46. Closes the moderate-decel dead-band.
-          apply_brake = np.clip(self.brake_last - wind_brake * self.params.NIDEC_BRAKE_WIND_FACTOR, 0.0, 1.0)
+          if self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
+            # aero + engine-brake already credited in the honest Plant-B demand above; the wind_brake
+            # subtraction here was the 2.3x aero over-credit in the droop decomposition. Do not double-credit.
+            apply_brake = np.clip(self.brake_last, 0.0, 1.0)
+          else:
+            apply_brake = np.clip(self.brake_last - wind_brake * self.params.NIDEC_BRAKE_WIND_FACTOR, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
           # Guardrail: never apply direct brake while ACC is requesting above-vEgo gas (pcm_off>0).
           # Normally unreachable after the 2.2g brake fix (pcm_off and brake are mutually exclusive),

@@ -37,7 +37,22 @@ class CarControllerParams:
   # to match measured coast moves brake onset to ~-0.28, closing that dead-band ("corner too hot")
   # and improving downhill decel delivery (+~88% brake) which also reduces integrator-windup droop.
   # Gas side is unchanged; the pcm_off>0 guardrail keeps it conflict-safe. Lower = more brake.
+  # (Superseded on the NIDEC_ALT path by the honest Plant-B model below; kept for other Nidecs.)
   NIDEC_BRAKE_WIND_FACTOR = 0.6
+
+  # ---- Plant-B: passive/friction realm honest model (FINDINGS_channel_plants_2026-06-09) ----
+  # The PCM servo realm (pcm_off) and the friction realm are DIFFERENT PLANTS. Wire-level rlog
+  # decomposition of the downhill droop event (deficit +0.95 m/s^2) split exactly into: brake map
+  # optimism (compute_gas_brake assumes full brake = 4.8 m/s^2, measured 3.07) + aero over-credit
+  # (unitless wind_brake ~0.68 m/s^2-equiv @33 m/s vs true coastdown 0.30) + grade under-comp
+  # (2.2 vs 9.81 -- the servo's grade rejection DIES when the throttle closes). Same error mirrored
+  # uphill: mild-decel lift over-decelerates (gravity credited at 2.2, acts at 9.81).
+  NIDEC_MODEL_BRAKE_PLANT = 3.07   # m/s^2 decel at full apply_brake (measured -0.012 m/s^2 per
+                                   # COMPUTER_BRAKE count x NIDEC_BRAKE_MAX=256, rlog brake map)
+  NIDEC_MODEL_ENGINE_BRAKE = 0.30  # m/s^2 engine-brake credit at the pcm_off floor (throttle closed);
+                                   # friction only covers demand beyond engine-brake + true aero
+  NIDEC_MODEL_GRADE_BLEND_LO = 0.05  # |decel request| where the grade-coefficient blend starts
+  NIDEC_MODEL_GRADE_BLEND_HI = 0.35  # ... and where it reaches full 9.81 (passive realm)
 
   # Model-based longitudinal feedforward for NIDEC_ALT_PCM_ACCEL (Odyssey)
   # Plant: aego = K(v) * pcm_off - g*sin(pitch),  K(v) = K0 - K1*v
