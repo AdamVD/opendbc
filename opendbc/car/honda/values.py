@@ -93,7 +93,15 @@ class CarControllerParams:
                                  # the ACC never fights the brake; hard decel still floors + brakes unchanged.
                                  # 1.0 = symmetric (old cliff); ~2 grades it; >~3 erodes decel response
                                  # margin on a slowing lead. Tune on-car.
-  NIDEC_MODEL_RATE = 6.0        # pcm_off rate limit (m/s per s)
+  NIDEC_MODEL_RATE = 6.0        # pcm_off rate limit DOWNWARD (m/s per s). Governs ease-off smoothness;
+                                # works with DECEL_SOFT to keep the graded lift-off (don't raise casually).
+  NIDEC_MODEL_RATE_UP = 10.0    # pcm_off rate limit UPWARD (m/s per s). 2026-06-09 rlog step analysis
+                                # (drive 00000027): gas response t_half scales with ask amplitude
+                                # (0.4s @ +0.3 ask, 1.35s @ +0.9-1.1) = slew-limit fingerprint, and
+                                # ask/(K*RATE) at RATE=6 matched the big-ask t_half exactly -- the old
+                                # symmetric 6.0 ramp (1.33s for 0->8) was the binding "slow to strength"
+                                # lag, not the PCM (dead time only ~0.35s). At 10, a 1.0 m/s^2 ask ramps
+                                # in ~0.8s. The PCM's own internal smoothing still shapes the torque.
   # Grade feed-forward gain for the gas-side pcm_off ONLY. At the FF's operating point (small
   # pcm_off, near speed-hold) the Honda ACC's internal speed loop rejects most grade, so the
   # closed-loop grade leakage the FF must invert is only ~2.1 m/s^2, NOT full g. Measured in the

@@ -283,8 +283,11 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       # effective inverse-gain: full K on accel, K*DECEL_SOFT on decel (gentler, graded lift-off)
       K_eff = K_v * (self.params.NIDEC_MODEL_DECEL_SOFT if a_des < 0.0 else 1.0)
       pcm_off = float(np.clip(a_des / K_eff, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
+      # asymmetric slew: fast UP so the PCM sees the full request promptly (it must also decide
+      # on a downshift -- a slowly-growing request lets gear-hold hysteresis defer the kickdown),
+      # slow DOWN to preserve the graded lift-off (pairs with DECEL_SOFT).
       pcm_off = rate_limit(pcm_off, self.last_pcm_off,
-                           -self.params.NIDEC_MODEL_RATE * DT_CTRL, self.params.NIDEC_MODEL_RATE * DT_CTRL)
+                           -self.params.NIDEC_MODEL_RATE * DT_CTRL, self.params.NIDEC_MODEL_RATE_UP * DT_CTRL)
       self.last_pcm_off = pcm_off
       pcm_speed = float(np.clip(CS.out.vEgo + pcm_off, 0.0, 100.0))
       pcm_accel = int(1.0 * self.params.NIDEC_GAS_MAX)
