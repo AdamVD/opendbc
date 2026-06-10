@@ -103,12 +103,18 @@ class CarInterface(CarInterfaceBase):
     else:
       # default longitudinal tuning for all Nidec hondas
       ret.longitudinalTuning.kiBP = [0., 5., 35.]
-      # 2026-06-09: halved from [0.40,0.28,0.17] after the two-plant FF correction landed. With honest
-      # brake/gas FF the integrator no longer rescues steady-state error, it just adds activity: rlog
-      # decomposition of drive 00000027 (clevpack) showed the plan at 0.13 m/s^3 RMS jerk but acmd at
-      # 0.47 -- the PID layer fidgeting around a calm plan (acmd reversals 21/min vs 11/min in kp=0 era).
-      # Windup-droop is gone (I-proxy med -0.02, was -1.0 class), so the strong ki had no remaining job.
-      ret.longitudinalTuning.kiV = [0.20, 0.14, 0.085]
+      # 2026-06-09: halved from [0.40,0.28,0.17] after the two-plant FF correction landed (PID fidget:
+      # acmd reversals 21/min vs 11/min in kp=0 era on drive 00000027, plan calm at 0.13 m/s^3).
+      # 2026-06-10: partial restore to 0.7x original. The halving over-shot: the integrator still has
+      # two real jobs the FF can't do. (a) Uphill equilibrium top-up: holding a 3-5% grade needs
+      # pcm_off ~1.7-2.4 (measured hold-po p75, quintet+clevpack rlogs) while the gas-side FF provides
+      # only ~0.85 -- the integrator builds the rest, and at half ki the build was slow (uphill-entry
+      # sag, hill-bottom refill). (b) Post-kickdown retreat: the PCM downshifts on its own schedule on
+      # grades (gear-ratio stream: trigger po 1.6-2.9, pitch med +0.033) and over-delivers +0.3-1.5
+      # m/s^2 for 2-3s until the integrator backs the command out; half ki doubled that exposure.
+      # Full restore is contraindicated by the measured 21/min fidget; 0.7x is the hedge. Eval
+      # signature: reversals/min with lead (daytime traffic drive needed).
+      ret.longitudinalTuning.kiV = [0.28, 0.20, 0.12]
       # kp was 0 (integral-only). The Honda NIDEC ACC speed loop (pcm_off->aego) is UNDERDAMPED/RESONANT
       # at its pole 1/K (~8.5s, peak gain ~2*K, log freq-response coh 0.86); the inverse-model FF assumes
       # flat gain K so it doesn't cancel the resonance -> lead-follow self-oscillation at ~9s behind even a
