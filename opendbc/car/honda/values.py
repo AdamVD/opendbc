@@ -47,10 +47,23 @@ class CarControllerParams:
   # (unitless wind_brake ~0.68 m/s^2-equiv @33 m/s vs true coastdown 0.30) + grade under-comp
   # (2.2 vs 9.81 -- the servo's grade rejection DIES when the throttle closes). Same error mirrored
   # uphill: mild-decel lift over-decelerates (gravity credited at 2.2, acts at 9.81).
-  NIDEC_MODEL_BRAKE_PLANT = 3.07   # m/s^2 decel at full apply_brake (measured -0.012 m/s^2 per
-                                   # COMPUTER_BRAKE count x NIDEC_BRAKE_MAX=256, rlog brake map)
-  NIDEC_MODEL_ENGINE_BRAKE = 0.30  # m/s^2 engine-brake credit at the pcm_off floor (throttle closed);
-                                   # friction only covers demand beyond engine-brake + true aero
+  NIDEC_MODEL_BRAKE_PLANT = 2.78   # m/s^2 decel at full apply_brake. Re-measured 2026-06-10 from
+                                   # 2376 steady grade-corrected samples (quintet+clevpack rlogs):
+                                   # 0.01086 m/s^2 per COMPUTER_BRAKE count x NIDEC_BRAKE_MAX=256,
+                                   # with a ~13-count dead knee (see NIDEC_MODEL_BRAKE_KNEE).
+  NIDEC_MODEL_BRAKE_KNEE = 13.0 / 256.0  # apply_brake fraction that produces no decel (hydraulic
+                                   # preload/pad clearance; LSQ knee 12.6 counts). Added as a bias
+                                   # whenever any friction is demanded, linearizing the response --
+                                   # without it, light braking (15-30 counts) delivered 0.07 m/s^2
+                                   # where the map expected 0.25 (descent overspeed, stoplight under-
+                                   # delivery +0.4-0.7).
+  NIDEC_MODEL_ENGINE_BRAKE = 0.05  # m/s^2 engine-brake credit at the pcm_off floor (throttle closed)
+                                   # ON TOP of the aero/coastdown table. Re-measured 2026-06-10: total
+                                   # passive decel (grade-corrected, no friction) is 0.21-0.32 m/s^2
+                                   # across 18-36 m/s ~= the coastdown table + only ~0.05; the old
+                                   # 0.30 double-counted engine braking already baked into the
+                                   # measured-coastdown wind_ms2 -> every moderate decel was commanded
+                                   # ~0.25 m/s^2 light (P1 downhill deficit +0.27, hill-bottom swing).
   NIDEC_MODEL_GRADE_BLEND_LO = 0.05  # |decel request| where the grade-coefficient blend starts
   NIDEC_MODEL_GRADE_BLEND_HI = 0.35  # ... and where it reaches full 9.81 (passive realm)
 

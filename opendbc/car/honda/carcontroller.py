@@ -207,7 +207,11 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         a_des_b = actuators.accel + hill_brake_ff
         friction_ms2 = max(0.0, -a_des_b - self.params.NIDEC_MODEL_ENGINE_BRAKE - wind_ms2)
         creep_brake = ((2.3 - CS.out.vEgo) / 2.3 * 0.15) if CS.out.vEgo < 2.3 else 0.0  # legacy stop-hold
-        brake = float(np.clip(friction_ms2 / self.params.NIDEC_MODEL_BRAKE_PLANT + creep_brake, 0.0, 1.0))
+        # knee bias: the first ~13 counts produce no decel (hydraulic preload), so demanded friction
+        # rides on top of the knee -- keeps light braking (descents, gentle stops) from landing in
+        # the dead zone
+        knee = self.params.NIDEC_MODEL_BRAKE_KNEE if friction_ms2 > 0.0 else 0.0
+        brake = float(np.clip(friction_ms2 / self.params.NIDEC_MODEL_BRAKE_PLANT + knee + creep_brake, 0.0, 1.0))
         gas = float(np.clip(actuators.accel / 4.8, 0.0, 1.0))  # legacy gas frac (unused on this path)
       else:
         gas, brake = compute_gas_brake(actuators.accel + hill_brake, CS.out.vEgo, self.CP.carFingerprint)
