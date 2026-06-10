@@ -103,7 +103,12 @@ class CarInterface(CarInterfaceBase):
     else:
       # default longitudinal tuning for all Nidec hondas
       ret.longitudinalTuning.kiBP = [0., 5., 35.]
-      ret.longitudinalTuning.kiV = [0.40, 0.28, 0.17]  # ~1/3 of on-device original [1.2,0.8,0.5]; required with model-based FF (stability cliff at kiV[0]≈0.48)
+      # 2026-06-09: halved from [0.40,0.28,0.17] after the two-plant FF correction landed. With honest
+      # brake/gas FF the integrator no longer rescues steady-state error, it just adds activity: rlog
+      # decomposition of drive 00000027 (clevpack) showed the plan at 0.13 m/s^3 RMS jerk but acmd at
+      # 0.47 -- the PID layer fidgeting around a calm plan (acmd reversals 21/min vs 11/min in kp=0 era).
+      # Windup-droop is gone (I-proxy med -0.02, was -1.0 class), so the strong ki had no remaining job.
+      ret.longitudinalTuning.kiV = [0.20, 0.14, 0.085]
       # kp was 0 (integral-only). The Honda NIDEC ACC speed loop (pcm_off->aego) is UNDERDAMPED/RESONANT
       # at its pole 1/K (~8.5s, peak gain ~2*K, log freq-response coh 0.86); the inverse-model FF assumes
       # flat gain K so it doesn't cancel the resonance -> lead-follow self-oscillation at ~9s behind even a
