@@ -243,9 +243,21 @@ static bool honda_tx_hook(const CANPacket_t *msg) {
     int pcm_speed = (msg->data[0] << 8) | msg->data[1];
     int pcm_gas = msg->data[2];
 
+    // Gas-override handoff: the Nidec PCM arbitrates driver pedal vs cruise servo
+    // max-wins (stock Honda pedal-override semantics), so the servo command may stay
+    // live while the accelerator is pressed -- that is what makes the takeover
+    // seamless when the driver lifts off. The friction brake (0x1FA below) stays
+    // blocked while the pedal is down. PCM-servo cars only: the interceptor path
+    // keeps the stock no-actuation-on-gas rule (its gas command is raw throttle,
+    // not a speed-servo target).
+    const bool allow_gas_override = (honda_hw == HONDA_NIDEC) && !enable_gas_interceptor;
+    const bool nidec_long_allowed = controls_allowed && (!gas_pressed_prev || allow_gas_override);
+
     bool violation = false;
-    violation |= longitudinal_speed_checks(pcm_speed, HONDA_NIDEC_LONG_LIMITS);
-    violation |= longitudinal_gas_checks(pcm_gas, HONDA_NIDEC_LONG_LIMITS);
+    violation |= !nidec_long_allowed && (pcm_speed != HONDA_NIDEC_LONG_LIMITS.inactive_speed);
+    const bool pcm_gas_valid = nidec_long_allowed && !safety_max_limit_check(pcm_gas, HONDA_NIDEC_LONG_LIMITS.max_gas, HONDA_NIDEC_LONG_LIMITS.min_gas);
+    const bool pcm_gas_inactive = pcm_gas == HONDA_NIDEC_LONG_LIMITS.inactive_gas;
+    violation |= !(pcm_gas_valid || pcm_gas_inactive);
     if (violation) {
       tx = false;
     }

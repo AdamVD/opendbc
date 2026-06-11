@@ -296,6 +296,7 @@ class TestHondaNidecSafetyBase(HondaBase):
   BUTTONS_BUS = 0
 
   MAX_GAS = 198
+  GAS_OVERRIDE_ACC_HUD = True  # PCM-servo cars: ACC_HUD stays txable during driver gas override
 
   BRAKE_SIG = "COMPUTER_BRAKE"
 
@@ -324,6 +325,25 @@ class TestHondaNidecSafetyBase(HondaBase):
         for pcm_speed in range(100):
           send = (controls_allowed and pcm_gas <= self.MAX_GAS) or (pcm_gas == 0 and pcm_speed == 0)
           self.assertEqual(send, self._tx(self._send_acc_hud_msg(pcm_gas, pcm_speed)))
+
+  def _set_user_gas_pressed(self, pressed):
+    self._rx(self._user_gas_msg(self.GAS_PRESSED_THRESHOLD + 1 if pressed else 0))
+
+  def test_acc_hud_gas_override(self):
+    # Gas-override handoff: on PCM-servo cars the ACC_HUD servo command stays txable
+    # while the driver presses the accelerator (the PCM arbitrates pedal-vs-servo
+    # max-wins); the friction brake stays blocked. Interceptor cars keep the stock
+    # no-actuation-on-gas rule.
+    self.safety.set_controls_allowed(True)
+    self._set_user_gas_pressed(True)
+    self.assertFalse(self.safety.get_longitudinal_allowed())
+    self.assertEqual(self.GAS_OVERRIDE_ACC_HUD, self._tx(self._send_acc_hud_msg(self.MAX_GAS, 50)))
+    self.assertFalse(self._tx(self._send_acc_hud_msg(self.MAX_GAS + 1, 50)))  # limits still apply
+    self.assertFalse(self._tx(self._send_brake_msg(10)))  # brake never fights the pedal
+    self.assertTrue(self._tx(self._send_brake_msg(0)))
+    self.safety.set_controls_allowed(False)
+    self.assertFalse(self._tx(self._send_acc_hud_msg(self.MAX_GAS, 50)))
+    self._set_user_gas_pressed(False)
 
   def test_fwd_hook(self):
     # normal operation, not forwarding AEB
@@ -392,6 +412,10 @@ class TestHondaNidecGasInterceptorSafety(GasInterceptorSafetyTest, HondaButtonEn
 
   TX_MSGS = HONDA_N_COMMON_TX_MSGS + [[0x200, 0]]
   INTERCEPTOR_THRESHOLD = 492
+  GAS_OVERRIDE_ACC_HUD = False  # interceptor gas command is raw throttle: keep stock rule
+
+  def _set_user_gas_pressed(self, pressed):
+    self._rx(self._interceptor_user_gas(self.INTERCEPTOR_THRESHOLD + 1 if pressed else 0))
 
   def setUp(self):
     self.packer = CANPackerSafety("honda_civic_touring_2016_can_generated")
@@ -430,6 +454,10 @@ class TestHondaNidecAltGasInterceptorSafety(GasInterceptorSafetyTest, HondaButto
 
   TX_MSGS = HONDA_N_COMMON_TX_MSGS + [[0x200, 0]]
   INTERCEPTOR_THRESHOLD = 492
+  GAS_OVERRIDE_ACC_HUD = False  # interceptor gas command is raw throttle: keep stock rule
+
+  def _set_user_gas_pressed(self, pressed):
+    self._rx(self._interceptor_user_gas(self.INTERCEPTOR_THRESHOLD + 1 if pressed else 0))
 
   def setUp(self):
     self.packer = CANPackerSafety("acura_ilx_2016_can_generated")

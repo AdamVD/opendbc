@@ -187,6 +187,18 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     # neither over-compensates for grade (see NIDEC_MODEL_GRADE_G in values.py).
     hill_brake_ff = math.sin(self.pitch) * self.params.NIDEC_MODEL_GRADE_G
 
+    # Gas-override handoff (Odyssey): keep the PCM speed-servo commanded while the driver
+    # presses the accelerator. The PCM arbitrates pedal-vs-servo max-wins (stock Honda
+    # pedal-override semantics), so the servo rides under the foot and the takeover on
+    # release has no torque gap -- without this it rebuilds from coast over ~2.5-3s, a
+    # -0.5 m/s^2 sag (FINDINGS_override_handoff_2026-06-11). Friction brake stays zero
+    # while the pedal is down (the gas/brake block below keeps brake=0 when not
+    # longActive, and panda blocks 0x1FA on gas press regardless).
+    gas_override_long = (CC.enabled and not CC.longActive
+                         and CS.out.gasPressed and not CS.out.brakePressed
+                         and self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL
+                         and not self.CP_SP.enableGasInterceptor)
+
     if CC.longActive:
       accel = actuators.accel
       if (self.CP.carFingerprint in (CAR.ACURA_MDX_3G, CAR.ACURA_MDX_3G_MMR)) and (accel > max(0, CS.out.aEgo) + 0.1):
@@ -272,7 +284,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
                     0.5]
     # The Honda ODYSSEY seems to have different PCM_ACCEL
     # msgs, is it other cars too?
-    if self.CP_SP.enableGasInterceptor or not CC.longActive:
+    if self.CP_SP.enableGasInterceptor or not (CC.longActive or gas_override_long):
       pcm_speed = 0.0
       pcm_accel = int(0.0)
       self.last_pcm_off = 0.0
