@@ -151,6 +151,11 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
 
     self.last_pcm_off = 0.0  # for rate-limiting in model-based NIDEC FF
 
+    # Tier-1 kickdown-surge trim state (see NIDEC_TRIM_* in values.py)
+    self.trim_frames = 0          # frames remaining in the trim/recovery window
+    self.last_tgt_gear = 0        # last valid TRANS_TARGET_GEAR (0 = unknown)
+    self.po_filt = 0.0            # ~1s low-pass of pcm_off (the TCU schedule sees history)
+
     self.gasfactor = 1.0 if (Params().get("HondaGasFactorParams") is None) else Params().get("HondaGasFactorParams")
     self.gasfactor_before_maxgas = self.gasfactor
     self.windfactor = 1.0 if (Params().get("HondaWindFactorParams") is None) else Params().get("HondaWindFactorParams")
@@ -271,6 +276,9 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       pcm_speed = 0.0
       pcm_accel = int(0.0)
       self.last_pcm_off = 0.0
+      self.trim_frames = 0
+      self.last_tgt_gear = 0
+      self.po_filt = 0.0
     elif self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
       # Model-based feedforward: invert the identified plant aego = K(v)*pcm_off - g*sin(pitch),
       # so pcm_off = (accel + hill_brake) / K(v), clamped to [PCM_OFF_MIN, PCM_OFF_MAX].
@@ -287,12 +295,32 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       # effective inverse-gain: full K on accel, K*DECEL_SOFT on decel (gentler, graded lift-off)
       K_eff = K_v * (self.params.NIDEC_MODEL_DECEL_SOFT if a_des < 0.0 else 1.0)
       pcm_off = float(np.clip(a_des / K_eff, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
+
+      # Tier-1 kickdown-surge trim: on the TCU's downshift announcement (TRANS_TARGET_GEAR
+      # down-step) in a power-on context, scale the ask by TRIM_DEPTH and recover over
+      # TRIM_DECAY_S. A chained announcement (multi-gear kickdown, ~25% of events) restarts
+      # the clock at the same depth. The upstream long PID will lean against the trim for
+      # its 3s life; that is intended (the surge it offsets is larger).
+      tg = getattr(CS, "trans_target_gear", 0)
+      if 1 <= tg <= 10:
+        if CC.longActive and tg < self.last_tgt_gear <= self.params.NIDEC_TRIM_GFROM_MAX and \
+           self.po_filt > self.params.NIDEC_TRIM_PO_MIN and \
+           actuators.accel > -0.3 and not CS.out.brakePressed:
+          self.trim_frames = int(self.params.NIDEC_TRIM_DECAY_S / DT_CTRL)
+        self.last_tgt_gear = tg
+      if self.trim_frames > 0:
+        if pcm_off > 0.0:
+          prog = 1.0 - self.trim_frames * DT_CTRL / self.params.NIDEC_TRIM_DECAY_S
+          pcm_off *= self.params.NIDEC_TRIM_DEPTH + (1.0 - self.params.NIDEC_TRIM_DEPTH) * prog
+        self.trim_frames -= 1
+
       # asymmetric slew: fast UP so the PCM sees the full request promptly (it must also decide
       # on a downshift -- a slowly-growing request lets gear-hold hysteresis defer the kickdown),
       # slow DOWN to preserve the graded lift-off (pairs with DECEL_SOFT).
       pcm_off = rate_limit(pcm_off, self.last_pcm_off,
                            -self.params.NIDEC_MODEL_RATE * DT_CTRL, self.params.NIDEC_MODEL_RATE_UP * DT_CTRL)
       self.last_pcm_off = pcm_off
+      self.po_filt += (DT_CTRL / 1.0) * (pcm_off - self.po_filt)
       pcm_speed = float(np.clip(CS.out.vEgo + pcm_off, 0.0, 100.0))
       pcm_accel = int(1.0 * self.params.NIDEC_GAS_MAX)
     elif (self.CP.carFingerprint in (CAR.ACURA_MDX_3G, CAR.ACURA_MDX_3G_MMR)):

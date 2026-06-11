@@ -170,3 +170,8 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+
+  # 10AT shift telemetry (Honda Odyssey; 0 = unknown/not a forward gear)
+  transTargetGear: int = auto_field()
+  transActualGear: int = auto_field()
+  transShiftActive: bool = auto_field()

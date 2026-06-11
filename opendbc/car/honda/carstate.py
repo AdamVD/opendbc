@@ -58,6 +58,11 @@ class CarState(CarStateBase, CarStateExt):
     self.initial_accFault_cleared = False
     self.initial_accFault_cleared_timer = int(10 / DT_CTRL) # 10 seconds after startup for initial faults to clear
 
+    # 10AT shift telemetry (populated from GEARBOX_AUTO when present; 0 = unknown)
+    self.trans_target_gear = 0
+    self.trans_actual_gear = 0
+    self.trans_shift_active = False
+
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
     cp_cam = can_parsers[Bus.cam]
@@ -170,6 +175,20 @@ class CarState(CarStateBase, CarStateExt):
     else:
       gear_position = self.shifter_values.get(cp.vl[self.gearbox_msg]["GEAR_SHIFTER"], None)
       ret.gearShifter = self.parse_gear_shifter(gear_position)
+
+    if self.gearbox_msg == "GEARBOX_AUTO":
+      # 10AT shift telemetry. TRANS_TARGET_GEAR is the TCU's announcement, ~0.3-1.0s ahead of
+      # the physical ratio change. TRANS_SHIFT_ACTIVITY: high nibble = actual current gear,
+      # low nibble = gear when settled / 0xE while a shift executes (0 outside forward gears).
+      tg = int(cp.vl["GEARBOX_AUTO"]["TRANS_TARGET_GEAR"])
+      sa = int(cp.vl["GEARBOX_AUTO"]["TRANS_SHIFT_ACTIVITY"])
+      self.trans_target_gear = tg if 1 <= tg <= 10 else 0
+      ag = sa >> 4
+      self.trans_actual_gear = ag if 1 <= ag <= 10 else 0
+      self.trans_shift_active = (sa & 0xF) == 0xE
+      ret_sp.transTargetGear = self.trans_target_gear
+      ret_sp.transActualGear = self.trans_actual_gear
+      ret_sp.transShiftActive = self.trans_shift_active
 
     ret.gasPressed = cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"] > 1e-5
 

@@ -124,6 +124,24 @@ class CarControllerParams:
   # Caveat: leakage is briefly higher entering a grade and on grades steeper than ~6deg.
   NIDEC_MODEL_GRADE_G = 2.2     # m/s^2; tune on-car (raise toward 9.81 if downhill overspeed)
 
+  # Tier-1 kickdown-surge trim (shift anticipation). The 10AT TCU announces every shift on
+  # GEARBOX_AUTO.TRANS_TARGET_GEAR ~0.3-1.0s before torque transfer; under ACC the felt surge
+  # peaks ~1.3s after the announcement and only G<=7 kickdowns are perceptible (med +0.6 m/s^2;
+  # G8-10 med +0.1 -- 2026-06-10 corpus, 223 power-on kickdowns over 6.8h). On a power-on
+  # downshift announcement, scale the positive pcm_off ask by TRIM_DEPTH and recover linearly
+  # over TRIM_DECAY_S. Depth must stay well above 0 (po~=0 is the box's upshift-back trigger ->
+  # hunting; also still holding the hill) and decay must finish inside the post-kickdown dwell
+  # (p10 3.5s). The cut itself is shaped by NIDEC_MODEL_RATE (6/s), no cliff.
+  NIDEC_TRIM_DEPTH = 0.5        # pcm_off multiplier at trigger (1.0 = feature off)
+  NIDEC_TRIM_DECAY_S = 3.0      # seconds to recover multiplier from DEPTH back to 1.0
+  NIDEC_TRIM_PO_MIN = 0.5       # only trim if ~1s-filtered pcm_off exceeds this (power-on context).
+                                # Replay sweep (trim_replay.py, 2.28 engaged-hours): 0.5 catches 96%
+                                # of felt G<=7 surges (>0.4) at 41 fires/h; 1.5 only 69% at 30/h --
+                                # felt surges happen down to po~0.6, and a "false" fire just softens
+                                # gas briefly on a real (if benign) downshift.
+  NIDEC_TRIM_GFROM_MAX = 7      # only trim announcements stepping down FROM gear <= this
+                                # (G8-10 kickdown surge med +0.1 m/s^2 -- imperceptible, leave alone)
+
   BOSCH_ACCEL_MIN = -3.5  # m/s^2
   BOSCH_ACCEL_MAX = 2.0  # m/s^2
 
