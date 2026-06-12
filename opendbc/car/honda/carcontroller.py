@@ -150,6 +150,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.bosch_last_gas = 0
 
     self.last_pcm_off = 0.0  # for rate-limiting in model-based NIDEC FF
+    self.gas_override_linger = 0  # frames to hold the override path through the release handback
 
     # Tier-1 kickdown-surge trim state (see NIDEC_TRIM_* in values.py)
     self.trim_frames = 0          # frames remaining in the trim/recovery window
@@ -198,6 +199,21 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
                          and CS.out.gasPressed and not CS.out.brakePressed
                          and self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL
                          and not self.CP_SP.enableGasInterceptor)
+    # Release handback bridge: carState's gasPressed falls one cycle before controlsd's
+    # longActive comes back, so on EVERY pedal release there are stale frames where
+    # neither longActive nor gas_override_long holds -> the not-long branch below resets
+    # the pcm_off slew state, and if a 10Hz ACC_HUD tick lands in the window (~1 in 5
+    # releases) a literal PCM_SPEED=0 reaches the PCM, dumping the servo to engine-brake
+    # and rebuilding over ~3s -- the exact sag this path exists to kill (route 35 ep2,
+    # 2026-06-11: a_min -0.65 vs -0.07/+0.10 on the clean releases). Linger ~0.3s after
+    # the pedal falls while still enabled (brake or disengage clears immediately).
+    if gas_override_long:
+      self.gas_override_linger = int(0.3 / DT_CTRL)
+    elif not CC.enabled or CS.out.brakePressed or CC.longActive:
+      self.gas_override_linger = 0
+    elif self.gas_override_linger > 0:
+      self.gas_override_linger -= 1
+      gas_override_long = True
 
     if CC.longActive:
       accel = actuators.accel
