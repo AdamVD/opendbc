@@ -150,6 +150,8 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.bosch_last_gas = 0
 
     self.last_pcm_off = 0.0  # for rate-limiting in model-based NIDEC FF
+    self.a_des_lp = 0.0      # servo-aware FF: low-pass of a_des for the build-vs-ease latch
+    self.po_build = False    # servo-aware FF: True while the accel request is building (onset)
     self.gas_override_linger = 0  # frames to hold the override path through the release handback
 
     # Tier-1 kickdown-surge trim state (see NIDEC_TRIM_* in values.py)
@@ -304,6 +306,8 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       pcm_speed = 0.0
       pcm_accel = int(0.0)
       self.last_pcm_off = 0.0
+      self.a_des_lp = 0.0
+      self.po_build = False
       self.trim_frames = 0
       self.last_tgt_gear = 0
       self.po_filt = 0.0
@@ -323,6 +327,29 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       # effective inverse-gain: full K on accel, K*DECEL_SOFT on decel (gentler, graded lift-off)
       K_eff = K_v * (self.params.NIDEC_MODEL_DECEL_SOFT if a_des < 0.0 else 1.0)
       pcm_off = float(np.clip(a_des / K_eff, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
+
+      # Servo/saturation-aware ease (NIDEC_MODEL_SERVO_* in values.py). The map above inverts a linear
+      # K; the Honda PCM is a saturating speed servo, so while EASING we instead invert its real
+      # proportional gain Ks=accel_ceil/PO_EDGE (the command lands in the responsive band) and park at
+      # the band edge while saturated -> the servo eases the instant the plan drops below the ceiling.
+      # Build-vs-ease is the exogenous a_des trend (hysteresis latch, no chatter). Onset (po_build)
+      # keeps the full 1/K offset above; decel (a_des<0) keeps the DECEL_SOFT path. SERVO_AWARE=False
+      # leaves the baseline map untouched. Skipped under gas_override_long: the override-handoff keeps
+      # pcm_speed primed for a smooth release, and the driver's pedal dominates anyway (PCM max-wins).
+      if self.params.NIDEC_MODEL_SERVO_AWARE:
+        self.a_des_lp += (DT_CTRL / self.params.NIDEC_MODEL_SERVO_TREND_TAU) * (a_des - self.a_des_lp)
+        if a_des - self.a_des_lp > self.params.NIDEC_MODEL_SERVO_TREND_EPS:
+          self.po_build = True
+        elif a_des - self.a_des_lp < -self.params.NIDEC_MODEL_SERVO_TREND_EPS:
+          self.po_build = False
+        if a_des >= 0.0 and not self.po_build and not gas_override_long:
+          accel_ceil = float(np.clip(self.params.NIDEC_MODEL_CEIL_V0 - self.params.NIDEC_MODEL_CEIL_K * CS.out.vEgo,
+                                     self.params.NIDEC_MODEL_CEIL_MIN, self.params.NIDEC_MODEL_CEIL_MAX))
+          if a_des >= accel_ceil:
+            pcm_off = self.params.NIDEC_MODEL_PO_EDGE + self.params.NIDEC_MODEL_PO_HOLD_MARGIN  # saturated: park at band edge
+          else:
+            pcm_off = a_des / (accel_ceil / self.params.NIDEC_MODEL_PO_EDGE)                    # in-band: invert servo gain
+          pcm_off = float(np.clip(pcm_off, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
 
       # Tier-1 kickdown-surge trim: on the TCU's downshift announcement (TRANS_TARGET_GEAR
       # down-step) in a power-on context, scale the ask by TRIM_DEPTH and recover over

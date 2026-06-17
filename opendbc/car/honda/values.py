@@ -124,6 +124,39 @@ class CarControllerParams:
   # Caveat: leakage is briefly higher entering a grade and on grades steeper than ~6deg.
   NIDEC_MODEL_GRADE_G = 2.2     # m/s^2; tune on-car (raise toward 9.81 if downhill overspeed)
 
+  # Servo/saturation-aware FF (2026-06-17, replay-validated -> FINDINGS_servo_ff_replay_2026-06-17.md).
+  # The inverse-K map pcm_off=a_des/K(v) inverts a LINEAR plant, but the Honda PCM is a saturating
+  # SPEED SERVO and pcm_off IS the commanded speed error: the servo floors throttle at the accel
+  # ceiling whenever the error exceeds ~PO_EDGE, so a_des/K (K~0.13) inflates the offset to 5-8 in the
+  # feedback-INERT saturated zone (cap-counterfactual: aego identical for pcm_off 4..8). The car then
+  # keeps pulling ~1-2s after the planner eases, because the offset must ooze back below the band edge
+  # before the servo responds (the "two shelves" follow-pull complaint, 2026-06-16). Fix: while EASING
+  # invert the servo's REAL proportional gain Ks=CEIL(v)/PO_EDGE so the command lands in the responsive
+  # band, and park the offset at the band edge while saturated -> the servo eases the instant the
+  # planner asks below the ceiling. Onset is UNCHANGED (full 1/K oomph while the request is building,
+  # gated by an a_des trend latch, so rising hysteresis still gets punched through) and decel (a_des<0)
+  # is byte-for-byte the DECEL_SOFT path, so the anti-slam grading and the relay zone are untouched.
+  # Replay (real MPC in loop): railed accel shelf shortens 0.87s open-loop / ~1.5s closed-loop on ep38,
+  # lead gap opens, no in-sim hunting. CAVEAT: the throttle-slam relay was killed by DECEL_SOFT before
+  # these logs existed, so replay CANNOT certify it stays gone -- that is the ON-CAR A/B gate. Set
+  # NIDEC_MODEL_SERVO_AWARE=False to revert to the exact inverse-K baseline (the 2026-06-16 map).
+  NIDEC_MODEL_SERVO_AWARE = True    # False = exact a_des/K(v) baseline; True = servo-aware ease
+  NIDEC_MODEL_PO_EDGE = 1.8         # m/s; servo proportional-band edge (saturation knee). aego rails
+                                    # at the ceiling for pcm_off>~PO_EDGE and modulates below it
+                                    # (falling-release ~1.5, rising-onset ~3.5; hysteresis straddles).
+  NIDEC_MODEL_PO_HOLD_MARGIN = 0.4  # while saturated, park offset at PO_EDGE+this (=2.2) -- margin
+                                    # above the knee so sensor/plan noise can't trip a premature ease.
+  # Accel CEILING = the Honda authority plateau aego cannot exceed vs speed (NOT the planner's
+  # A_CRUISE_MAX): ~0.89 m/s^2 low-speed, ~0.55 highway (accel-delivery-ceiling 2026-06-08 + the
+  # 2026-06-17 plant-ID). Tune on-car: raise if onset feels soft, lower toward the measured plateau
+  # if the ease still lags. ceil(v)=clip(CEIL_V0 - CEIL_K*v, CEIL_MIN, CEIL_MAX).
+  NIDEC_MODEL_CEIL_V0 = 0.975       # ceiling at 0 m/s (m/s^2)
+  NIDEC_MODEL_CEIL_K = 0.0142       # ceiling falloff (m/s^2 per m/s)
+  NIDEC_MODEL_CEIL_MIN = 0.35       # clamp
+  NIDEC_MODEL_CEIL_MAX = 0.95       # clamp
+  NIDEC_MODEL_SERVO_TREND_TAU = 0.4   # s; a_des trend low-pass for the build-vs-ease latch
+  NIDEC_MODEL_SERVO_TREND_EPS = 0.02  # m/s^2; trend deadband (hysteresis) -> no build/ease chatter
+
   # Tier-1 kickdown-surge trim (shift anticipation). The 10AT TCU announces every shift on
   # GEARBOX_AUTO.TRANS_TARGET_GEAR ~0.3-1.0s before torque transfer; under ACC the felt surge
   # peaks ~1.3s after the announcement and only G<=7 kickdowns are perceptible (med +0.6 m/s^2;
