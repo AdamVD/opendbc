@@ -152,6 +152,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.last_pcm_off = 0.0  # for rate-limiting in model-based NIDEC FF
     self.a_des_lp = 0.0      # servo-aware FF: low-pass of a_des for the build-vs-ease latch
     self.po_build = False    # servo-aware FF: True while the accel request is building (onset)
+    self.dbo_sus = 0         # DBO: frames the demand has exceeded the nudge-cap reach (sustain gate)
     self.gas_override_linger = 0  # frames to hold the override path through the release handback
 
     # Tier-1 kickdown-surge trim state (see NIDEC_TRIM_* in values.py)
@@ -308,6 +309,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       self.last_pcm_off = 0.0
       self.a_des_lp = 0.0
       self.po_build = False
+      self.dbo_sus = 0
       self.trim_frames = 0
       self.last_tgt_gear = 0
       self.po_filt = 0.0
@@ -350,6 +352,41 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           else:
             pcm_off = a_des / (accel_ceil / self.params.NIDEC_MODEL_PO_EDGE)                    # in-band: invert servo gain
           pcm_off = float(np.clip(pcm_off, self.params.NIDEC_MODEL_PCM_OFF_MIN, self.params.NIDEC_MODEL_PCM_OFF_MAX))
+
+      # DBO -- onset front-load + recoverability CAP (NIDEC_MODEL_DBO / NIDEC_DBO_* in values.py).
+      # Applied ON TOP of the servo-aware FF above (does NOT replace it). The pcm_off knee IS a
+      # downshift and within a gear pcm_off ~does nothing (0x130 plant-ID), so:
+      #  (1) "INDUCE TORQUE FASTER" -- on a genuine RISING demand the baseline parks pcm_off in its
+      #      ease band (~1.5, BELOW the ~2.5 knee) for a gradual gap-close => it SAGS, no torque,
+      #      until the gap forces a fast ramp. Front-load to KNEE_CROSS so the mild downshift fires
+      #      PROMPTLY (torque ~0.5s sooner, onset_test). Gated to genuine demand (po_build &&
+      #      a_des>ONSET_MIN) so micro-nudges don't fire downshifts; the slew ramps the lift. (Trade:
+      #      commits to torque more readily = more shallow downshifts -- the intended cost of faster
+      #      response; the TCU honors the cross only partially. Frequency is unquantifiable in sim.)
+      #  (2) "NEVER UNRECOVERABLE OVER-ACCEL" -- baseline rails pcm_off to ~5-8 (INERT: aego identical
+      #      4..8) and oozes back over 1-2s = the confirmed over-pull/overshoot (Jekyll Check-2). Cap
+      #      at PO_CAP bounds the pull (gear-7 at pcm_off 3.2 ~0.35 vs railed ~0.6) and retracts in
+      #      ~one 0.85s lag -> tames the deep-kickdown overshoot (it does NOT prevent the downshift
+      #      DEPTH itself -- that needs a follow gear-hold, deferred). Uncaps to FULL_CAP once the
+      #      demand SUSTAINS > SUSTAIN_T (real set-speed / pull-away keeps full authority).
+      # DAMP (experimental, default 0) coasts sub-floor asks. Decel & DBO=False are byte-identical to
+      # the servo-aware baseline; the else-reset avoids a stale sustain-uncap on the gas-override
+      # handback (safety review 2026-06-19). Front-load uses po_build (maintained by the servo-aware
+      # block above); with SERVO_AWARE off it degrades to cap-only.
+      if self.params.NIDEC_MODEL_DBO and a_des >= 0.0 and not gas_override_long:
+        if self.params.NIDEC_DBO_DAMP > 0.0 and a_des < self.params.NIDEC_DBO_DAMP:
+          pcm_off = 0.0
+        elif self.po_build and a_des > self.params.NIDEC_DBO_ONSET_MIN:
+          pcm_off = max(pcm_off, self.params.NIDEC_DBO_KNEE_CROSS)  # onset front-load (induce torque faster)
+        if pcm_off > self.params.NIDEC_DBO_PO_CAP:
+          self.dbo_sus += 1
+        else:
+          self.dbo_sus = 0
+        cap = (self.params.NIDEC_DBO_FULL_CAP if self.dbo_sus * DT_CTRL >= self.params.NIDEC_DBO_SUSTAIN_T
+               else self.params.NIDEC_DBO_PO_CAP)
+        pcm_off = min(pcm_off, cap)
+      elif self.params.NIDEC_MODEL_DBO:
+        self.dbo_sus = 0  # DBO on but not capping (decel/override): reset so no stale uncap on handback
 
       # Tier-1 kickdown-surge trim: on the TCU's downshift announcement (TRANS_TARGET_GEAR
       # down-step) in a power-on context, scale the ask by TRIM_DEPTH and recover over

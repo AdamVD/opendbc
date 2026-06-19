@@ -157,6 +157,54 @@ class CarControllerParams:
   NIDEC_MODEL_SERVO_TREND_TAU = 0.4   # s; a_des trend low-pass for the build-vs-ease latch
   NIDEC_MODEL_SERVO_TREND_EPS = 0.02  # m/s^2; trend deadband (hysteresis) -> no build/ease chatter
 
+  # DBO -- onset front-load + sustain-gated recoverability cap on the build-side pcm_off
+  # (2026-06-19; FINDINGS_knee_is_downshift_2026-06-19.md). Applied ON TOP of the servo-aware FF;
+  # decel/brake untouched. Two halves implementing "induce torque faster, but never to an extent
+  # that puts us in an unrecoverable over-accel", grounded in the 0x130 plant-ID (the pcm_off knee
+  # IS a downshift; cruise gear has ~0 gentle-accel authority -- accel ONLY comes from a kickdown):
+  #
+  #  ONSET FRONT-LOAD ("induce torque faster"): for a GENUINE rising accel demand (po_build &&
+  #  a_des > ONSET_MIN) the baseline servo-aware FF parks pcm_off in its ease band (~1.5, BELOW the
+  #  ~2.5 knee) for a gradual gap-close -> it SAGS, delivering no torque until the gap opens enough
+  #  to force a fast ramp. DBO instead crosses the knee decisively to KNEE_CROSS so the (mild,
+  #  wanted) downshift fires PROMPTLY -> torque arrives ~0.5s sooner (open-loop demo onset_test).
+  #  torque_req has no dead-time (0x130 Test C) so the cross translates immediately to a torque
+  #  request. Gated to genuine demand so micro-nudges don't fire downshifts; the slew ramps the lift
+  #  (no 1-frame jump). HONEST: this commits to torque more readily = MORE (shallow) downshifts --
+  #  the intended trade for faster response (Adam's "induce torque faster"); and the TCU honors the
+  #  cross only ~partially. The downshift FREQUENCY effect is unquantifiable in sim -> on-car A/B.
+  #
+  #  RECOVERABILITY CAP ("never unrecoverable over-accel"): baseline rails pcm_off to ~5-8, but
+  #  pcm_off > ~5 is INERT (aego identical 4..8; authority saturates ~3-4 -- Adam + plant-ID) and
+  #  the railed offset oozes back over 1-2s = the CONFIRMED over-pull/overshoot (Jekyll Check-2).
+  #  Cap at PO_CAP -> bounds the pull (gear-7 at pcm_off 3.2 ~0.35 vs railed ~0.6) and retracts in
+  #  ~one 0.85s lag -> the "extremely strong overshoot" of a deep kickdown is TAMED. The cap does
+  #  NOT prevent the downshift DEPTH (the 10->7 itself; depth is TCU/rate-internal, pcm_off LEVEL is
+  #  flat ~2.3 across depths -- knee_depth.py); preventing the 10->7 needs a follow gear-hold,
+  #  DEFERRED. SUSTAIN-GATE: cap=PO_CAP for nudges; demand persisting > SUSTAIN_T uncaps to FULL_CAP
+  #  so a real set-speed bump / lead pull-away keeps full authority.
+  #
+  # Reviewed by 2 adversarial subagents + advisor: a -25% downshift-FREQUENCY claim was a sim
+  # artifact (RETRACTED -- the gear-sim cannot measure frequency); the cap's overshoot benefit rests
+  # on the confirmed mechanism, not a sim number. Sim is DIRECTIONAL; on-car A/B vs the servo-aware
+  # baseline is the gate. NIDEC_MODEL_DBO=False is byte-identical to the 2026-06-17 baseline.
+  NIDEC_MODEL_DBO = True   # ARMED for A/B 2026-06-19 (Adam's call: test "induce torque faster"). Set
+                           # False to revert to the exact servo-aware baseline. Watch: crisper onset
+                           # behind a gradual lead + bounded (no 10->7-strength) pull; COST = more
+                           # shallow downshifts behind a steady lead -> if it feels busy, raise
+                           # NIDEC_DBO_ONSET_MIN toward cap-only or report for the gear-hold pivot.
+  NIDEC_DBO_KNEE_CROSS = 2.9  # m/s; onset front-load target -- cross the soft knee (~2.5) decisively
+                              # so the mild downshift fires promptly (induce torque faster).
+  NIDEC_DBO_ONSET_MIN = 0.15  # m/s^2; only front-load a RISING a_des above this (genuine demand;
+                              # micro-nudges below it stay on the servo-aware FF -> no downshift spam).
+  NIDEC_DBO_PO_CAP = 3.2      # m/s; nudge cap (recoverability). Tune DOWN toward ~3.0 on-car if the
+                              # capped pull still overshoots; UP if onset feels gutless on follow.
+  NIDEC_DBO_FULL_CAP = 5.0    # m/s; sustained-demand cap (>5 is inert, only deepens the kickdown).
+  NIDEC_DBO_SUSTAIN_T = 1.3   # s; pcm_off above PO_CAP for this long -> uncap to FULL_CAP.
+  NIDEC_DBO_DAMP = 0.0        # m/s^2; EXPERIMENTAL, default 0 (inactive). >0 coasts a_des below it
+                              # (don't command the wanted mild downshift). On-car sag<->frequency
+                              # knob ONLY -- unvalidated for frequency, loosens the gap; leave at 0.
+
   # Tier-1 kickdown-surge trim (shift anticipation). The 10AT TCU announces every shift on
   # GEARBOX_AUTO.TRANS_TARGET_GEAR ~0.3-1.0s before torque transfer; under ACC the felt surge
   # peaks ~1.3s after the announcement and only G<=7 kickdowns are perceptible (med +0.6 m/s^2;
