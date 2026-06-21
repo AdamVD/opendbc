@@ -188,11 +188,13 @@ class CarControllerParams:
   # artifact (RETRACTED -- the gear-sim cannot measure frequency); the cap's overshoot benefit rests
   # on the confirmed mechanism, not a sim number. Sim is DIRECTIONAL; on-car A/B vs the servo-aware
   # baseline is the gate. NIDEC_MODEL_DBO=False is byte-identical to the 2026-06-17 baseline.
-  NIDEC_MODEL_DBO = True   # ARMED for A/B 2026-06-19 (Adam's call: test "induce torque faster"). Set
-                           # False to revert to the exact servo-aware baseline. Watch: crisper onset
-                           # behind a gradual lead + bounded (no 10->7-strength) pull; COST = more
-                           # shallow downshifts behind a steady lead -> if it feels busy, raise
-                           # NIDEC_DBO_ONSET_MIN toward cap-only or report for the gear-hold pivot.
+  NIDEC_MODEL_DBO = False  # DISABLED 2026-06-21 (Adam's call: low confidence + never driven on the
+                           # Jekyll trip; revert to the exact servo-aware baseline for now). False is
+                           # byte-identical to the 2026-06-17 baseline. Flip back to True to A/B the cap
+                           # ("induce torque faster") on a LOW-STAKES LOCAL drive before the ~2026-07-21
+                           # trip -- watch crisper onset behind a gradual lead + bounded pull; COST = more
+                           # shallow downshifts behind a steady lead (raise NIDEC_DBO_ONSET_MIN or pivot
+                           # to the gear-hold if busy).
   NIDEC_DBO_KNEE_CROSS = 2.9  # m/s; onset front-load target -- cross the soft knee (~2.5) decisively
                               # so the mild downshift fires promptly (induce torque faster).
   NIDEC_DBO_ONSET_MIN = 0.15  # m/s^2; only front-load a RISING a_des above this (genuine demand;
