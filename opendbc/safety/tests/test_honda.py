@@ -11,7 +11,10 @@ from opendbc.safety.tests.gas_interceptor_common import GasInterceptorSafetyTest
 
 from opendbc.sunnypilot.car.honda.values_ext import HondaSafetyFlagsSP
 
-HONDA_N_COMMON_TX_MSGS = [[0xE4, 0], [0x194, 0], [0x1FA, 0], [0x30C, 0], [0x33D, 0]]
+HONDA_N_COMMON_TX_MSGS = [[0xE4, 0], [0x194, 0], [0x33D, 0]]
+HONDA_N_COMMON_LONG_TX_MSGS = [[0x1FA, 0], [0x30C, 0]]
+# Stock longitudinal: openpilot only spams cruise buttons (0x296 on the Odyssey, 0x1A6 on alt-SCM Nidecs)
+HONDA_N_STOCK_LONGITUDINAL_TX_MSGS = [[0x296, 0], [0x1A6, 0]]
 
 
 class Btn:
@@ -287,7 +290,7 @@ class HondaBase(common.CarSafetyTest):
 
 
 class TestHondaNidecSafetyBase(HondaBase):
-  TX_MSGS = HONDA_N_COMMON_TX_MSGS
+  TX_MSGS = HONDA_N_COMMON_TX_MSGS + HONDA_N_COMMON_LONG_TX_MSGS
   FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0x194, 0x33D, 0x30C]}
   RELAY_MALFUNCTION_ADDRS = {0: (0xE4, 0x194, 0x33D, 0x30C)}
 
@@ -410,7 +413,7 @@ class TestHondaNidecGasInterceptorSafety(GasInterceptorSafetyTest, HondaButtonEn
     Covers the Honda Nidec safety mode with a gas interceptor, switches to a button-enable car
   """
 
-  TX_MSGS = HONDA_N_COMMON_TX_MSGS + [[0x200, 0]]
+  TX_MSGS = HONDA_N_COMMON_TX_MSGS + HONDA_N_COMMON_LONG_TX_MSGS + [[0x200, 0]]
   INTERCEPTOR_THRESHOLD = 492
   GAS_OVERRIDE_ACC_HUD = False  # interceptor gas command is raw throttle: keep stock rule
 
@@ -452,7 +455,7 @@ class TestHondaNidecAltGasInterceptorSafety(GasInterceptorSafetyTest, HondaButto
     Covers the Honda Nidec safety mode with alt SCM messages and gas interceptor, switches to a button-enable car
   """
 
-  TX_MSGS = HONDA_N_COMMON_TX_MSGS + [[0x200, 0]]
+  TX_MSGS = HONDA_N_COMMON_TX_MSGS + HONDA_N_COMMON_LONG_TX_MSGS + [[0x200, 0]]
   INTERCEPTOR_THRESHOLD = 492
   GAS_OVERRIDE_ACC_HUD = False  # interceptor gas command is raw throttle: keep stock rule
 
@@ -476,6 +479,58 @@ class TestHondaNidecAltGasInterceptorSafety(GasInterceptorSafetyTest, HondaButto
     values = {"CRUISE_BUTTONS": buttons, "MAIN_ON": main_on, "COUNTER": self.cnt_button % 4}
     self.__class__.cnt_button += 1
     return self.packer.make_can_msg_safety("SCM_BUTTONS", bus, values)
+
+
+class TestHondaNidecStockLongitudinalSafety(HondaPcmEnableBase, TestHondaNidecSafetyBase):
+  """
+    Covers the Honda Nidec safety mode with factory (stock) longitudinal control: openpilot
+    sends no gas/brake/ACC_HUD and only spams cruise buttons (0x296 SCM_BUTTONS on the Odyssey),
+    while the factory camera's brake command (0x1FA) is forwarded to the car.
+  """
+
+  TX_MSGS = HONDA_N_COMMON_TX_MSGS + HONDA_N_STOCK_LONGITUDINAL_TX_MSGS
+  FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0x194, 0x33D]}
+  RELAY_MALFUNCTION_ADDRS = {0: (0xE4, 0x194, 0x33D)}
+
+  def setUp(self):
+    self.packer = CANPackerSafety("honda_civic_touring_2016_can_generated")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_current_safety_param_sp(HondaSafetyFlagsSP.STOCK_LONGITUDINAL)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hondaNidec, 0)
+    self.safety.init_tests()
+
+  def test_fwd_hook(self):
+    # Factory ACC owns longitudinal: the camera brake (0x1FA) and ACC HUD (0x30C) are always
+    # forwarded to the car, independent of the stock-AEB latch (honda_fwd_brake).
+    for fwd_brake in (False, True):
+      self.safety.set_honda_fwd_brake(fwd_brake)
+      self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x1FA))
+      common.CarSafetyTest.test_fwd_hook(self)
+
+  # openpilot sends no gas/brake/ACC_HUD in stock longitudinal; those tx paths don't apply.
+  def _send_brake_msg(self, brake, aeb_req=0, bus=0):
+    pass
+
+  def _rx_brake_msg(self, brake, aeb_req=0):
+    pass
+
+  def _send_acc_hud_msg(self, pcm_gas, pcm_speed):
+    pass
+
+  def test_acc_hud_safety_check(self):
+    pass
+
+  def test_acc_hud_gas_override(self):
+    pass
+
+  def test_honda_fwd_brake_latching(self):
+    pass
+
+  def test_brake_safety_check(self):
+    pass
+
+  def test_disable_control_allowed_from_cruise(self):
+    pass
 
 
 # ********************* Honda Bosch **********************
