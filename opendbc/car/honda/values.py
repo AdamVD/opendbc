@@ -188,21 +188,34 @@ class CarControllerParams:
   # artifact (RETRACTED -- the gear-sim cannot measure frequency); the cap's overshoot benefit rests
   # on the confirmed mechanism, not a sim number. Sim is DIRECTIONAL; on-car A/B vs the servo-aware
   # baseline is the gate. NIDEC_MODEL_DBO=False is byte-identical to the 2026-06-17 baseline.
-  NIDEC_MODEL_DBO = False  # DISABLED 2026-06-21 (Adam's call: low confidence + never driven on the
-                           # Jekyll trip; revert to the exact servo-aware baseline for now). False is
-                           # byte-identical to the 2026-06-17 baseline. Flip back to True to A/B the cap
-                           # ("induce torque faster") on a LOW-STAKES LOCAL drive before the ~2026-07-21
-                           # trip -- watch crisper onset behind a gradual lead + bounded pull; COST = more
-                           # shallow downshifts behind a steady lead (raise NIDEC_DBO_ONSET_MIN or pivot
-                           # to the gear-hold if busy).
+  NIDEC_MODEL_DBO = True   # RE-ARMED 2026-07-11 as CAP-ONLY (FRONT_LOAD=False below) alongside the
+                           # planner's opening-gap chase governor (FINDINGS_follow_policy_2026-07-09.md
+                           # rev 7/10): governor bounds the ask upstream (~0.35 in opening-gap follow);
+                           # the cap de-inflates whatever still crosses the knee (9.6% of follow frames
+                           # pre-governor, ask p98 4.47). Was DISABLED 2026-06-21 (Adam's call, never
+                           # driven on the Jekyll trip). False remains byte-identical to the 2026-06-17
+                           # servo-aware baseline.
+  NIDEC_DBO_FRONT_LOAD = False  # onset front-load ("induce torque faster") DISABLED 2026-07-11: it forces
+                              # pcm_off >= KNEE_CROSS for any modest rising ask -- exactly the knee-cross
+                              # that FINDINGS_sustained_hold_overshoot_2026-07-10.md identified as the
+                              # "0.3 held long enough gets 0.6" mechanism (59% of >=6s holds downshift;
+                              # no-shift holds track fine), and it chases the opening gap the 7/9 follow-
+                              # policy work says factory deliberately does NOT chase. Cap-only was always
+                              # the solid half (6/19 advisor review); front-load stays an unproven bet.
   NIDEC_DBO_KNEE_CROSS = 2.9  # m/s; onset front-load target -- cross the soft knee (~2.5) decisively
-                              # so the mild downshift fires promptly (induce torque faster).
+                              # so the mild downshift fires promptly (inert while FRONT_LOAD=False).
   NIDEC_DBO_ONSET_MIN = 0.15  # m/s^2; only front-load a RISING a_des above this (genuine demand;
                               # micro-nudges below it stay on the servo-aware FF -> no downshift spam).
   NIDEC_DBO_PO_CAP = 3.2      # m/s; nudge cap (recoverability). Tune DOWN toward ~3.0 on-car if the
                               # capped pull still overshoots; UP if onset feels gutless on follow.
   NIDEC_DBO_FULL_CAP = 5.0    # m/s; sustained-demand cap (>5 is inert, only deepens the kickdown).
   NIDEC_DBO_SUSTAIN_T = 1.3   # s; pcm_off above PO_CAP for this long -> uncap to FULL_CAP.
+  NIDEC_DBO_UNCAP_A = 0.5     # m/s^2; sustain-uncap ALSO requires a_des above this (2026-07-10 fix:
+                              # the time gate alone tripped on 53% of patient >=6s follow holds --
+                              # hold_dbo_check.py -- handing authority back exactly when the cap was
+                              # needed; a real set-speed bump / pull-away asks >0.5, a patient follow
+                              # hold asks 0.2-0.45. a_des includes the grade FF term, so sustained
+                              # uphill demand still uncaps and keeps climb authority).
   NIDEC_DBO_DAMP = 0.0        # m/s^2; EXPERIMENTAL, default 0 (inactive). >0 coasts a_des below it
                               # (don't command the wanted mild downshift). On-car sag<->frequency
                               # knob ONLY -- unvalidated for frequency, loosens the gap; leave at 0.
