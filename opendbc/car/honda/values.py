@@ -210,12 +210,19 @@ class CarControllerParams:
                               # capped pull still overshoots; UP if onset feels gutless on follow.
   NIDEC_DBO_FULL_CAP = 5.0    # m/s; sustained-demand cap (>5 is inert, only deepens the kickdown).
   NIDEC_DBO_SUSTAIN_T = 1.3   # s; pcm_off above PO_CAP for this long -> uncap to FULL_CAP.
-  NIDEC_DBO_UNCAP_A = 0.5     # m/s^2; sustain-uncap ALSO requires a_des above this (2026-07-10 fix:
-                              # the time gate alone tripped on 53% of patient >=6s follow holds --
-                              # hold_dbo_check.py -- handing authority back exactly when the cap was
-                              # needed; a real set-speed bump / pull-away asks >0.5, a patient follow
-                              # hold asks 0.2-0.45. a_des includes the grade FF term, so sustained
-                              # uphill demand still uncaps and keeps climb authority).
+  # Sustain-uncap a_des gate (2026-07-10 fix, revised on review 2026-07-11): the time gate alone
+  # tripped on 53% of patient >=6s follow holds (hold_dbo_check.py), handing authority back exactly
+  # when the cap was needed; a real set-speed bump / pull-away asks well above a patient follow
+  # hold's 0.2-0.45. a_des includes the grade FF term, so sustained uphill demand still uncaps and
+  # keeps climb authority. Speed-dependent (7/11): a fixed 0.5 was unreachable above ~36 m/s where
+  # the planner's own A_CRUISE_MAX caps asks at 0.54..0.50 -- the threshold now tracks that ceiling
+  # (a railed ask IS full demand). HYST (7/11): counter FREEZES (neither counts nor resets) while
+  # a_des sits within HYST below the threshold with demand still above PO_CAP, so unfiltered-pitch
+  # dither can't zero the 1.3s counter or flap an earned uncap; a_des dropping below the band or
+  # pcm_off easing under PO_CAP still resets normally.
+  NIDEC_DBO_UNCAP_A_BP = [25., 40.]  # m/s
+  NIDEC_DBO_UNCAP_A_V = [0.5, 0.42]  # m/s^2; count-up threshold on a_des (flat 0.5 below 25 m/s)
+  NIDEC_DBO_UNCAP_A_HYST = 0.1       # m/s^2; freeze band below the threshold
   NIDEC_DBO_DAMP = 0.0        # m/s^2; EXPERIMENTAL, default 0 (inactive). >0 coasts a_des below it
                               # (don't command the wanted mild downshift). On-car sag<->frequency
                               # knob ONLY -- unvalidated for frequency, loosens the gap; leave at 0.

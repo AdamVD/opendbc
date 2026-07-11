@@ -379,10 +379,17 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           pcm_off = 0.0
         elif self.params.NIDEC_DBO_FRONT_LOAD and self.po_build and a_des > self.params.NIDEC_DBO_ONSET_MIN:
           pcm_off = max(pcm_off, self.params.NIDEC_DBO_KNEE_CROSS)  # onset front-load (induce torque faster)
-        if pcm_off > self.params.NIDEC_DBO_PO_CAP and a_des > self.params.NIDEC_DBO_UNCAP_A:
+        # Sustain-uncap gate (reviewed 2026-07-11): the a_des threshold tracks the planner's own
+        # speed-dependent accel ceiling (a railed ask IS full demand at any speed -- a fixed 0.5 was
+        # unreachable above ~36 m/s where the planner caps asks at 0.54..0.50), and the counter gets
+        # hysteresis + a freeze band so unfiltered-pitch dither in a_des around the threshold can
+        # neither zero the 1.3s counter nor flap an earned uncap back to PO_CAP mid pull-away.
+        uncap_a = float(np.interp(CS.out.vEgo, self.params.NIDEC_DBO_UNCAP_A_BP, self.params.NIDEC_DBO_UNCAP_A_V))
+        if pcm_off > self.params.NIDEC_DBO_PO_CAP and a_des > uncap_a:
           self.dbo_sus += 1
-        else:
+        elif pcm_off <= self.params.NIDEC_DBO_PO_CAP or a_des < uncap_a - self.params.NIDEC_DBO_UNCAP_A_HYST:
           self.dbo_sus = 0
+        # else: a_des inside the hysteresis band with demand still above the cap -> hold the counter
         cap = (self.params.NIDEC_DBO_FULL_CAP if self.dbo_sus * DT_CTRL >= self.params.NIDEC_DBO_SUSTAIN_T
                else self.params.NIDEC_DBO_PO_CAP)
         pcm_off = min(pcm_off, cap)
