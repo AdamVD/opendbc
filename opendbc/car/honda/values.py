@@ -312,6 +312,22 @@ class CarControllerParams:
                                     # closing lead for seconds)
   NIDEC_DESCENT_FRIC_ENTRY = 0.05   # m/s^2: latch ENTRY requires current friction demand below this
                                     # (seamless engage -- no one-frame brake dump on re-arm)
+  NIDEC_DESCENT_REARM_T = 5.0       # s: bte (band-top-exit) ALSO clears after this cooldown, not only
+                                    # below BAND_REARM (rev 3, first drive 7/12: steep-grade friction
+                                    # equilibrium sits at +0.5..+1.0 -- ABOVE the +0.42 re-arm line --
+                                    # so one band-top excursion, e.g. a set-speed tap at a crest, locked
+                                    # the latch out for the REST of the hill: 17.8 s of friction on the
+                                    # a8 descent. Cooldown bounds the trim sawtooth by TIME instead of
+                                    # by unreachable geometry; instant re-arm below BAND_REARM kept)
+  NIDEC_DESCENT_GAS_ZERO = False    # A/B, default OFF -- premise FALSIFIED before first flip: the 7/6
+                                    # stock corpus shows the camera keeps PCM_GAS PINNED AT 198 during
+                                    # its own engine-brake downshifts; the trigger is the PCM servo's
+                                    # growing overspeed error, NOT the gas request. Zeroing would
+                                    # diverge from stock. Kept as a last-resort experiment only. Note
+                                    # stock does NOT downshift on gentle (-1.5..-3%) descents (closed
+                                    # throttle holds +1..2.5 kph), only at -3.9..-5.6% -- exactly the
+                                    # grades where the pre-rev-3 bte lockout kept our anchor out, so
+                                    # sustained engagement (REARM_T) is the real downshift lever.
 
   BOSCH_ACCEL_MIN = -3.5  # m/s^2
   BOSCH_ACCEL_MAX = 2.0  # m/s^2

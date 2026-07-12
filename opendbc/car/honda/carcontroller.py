@@ -163,7 +163,8 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
 
     # Descent-mode latch state (NIDEC_DESCENT_* in values.py, SPEC_descent_mode_2026-07-11)
     self.descent = False         # engine-brake-first latch
-    self.descent_bte = False     # band-top exited: re-entry only below BAND_REARM (sawtooth bound)
+    self.descent_bte = False     # band-top exited: re-entry below BAND_REARM or after REARM_T cooldown
+    self.descent_bte_frames = 0  # frames since band-top exit (drives the REARM_T cooldown, rev 3)
     self.descent_pitch_lp = 0.0  # ~1s LP of pitch for the latch only (FF paths keep raw pitch)
     self.descent_capable = self.params.NIDEC_DESCENT and CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL
 
@@ -279,9 +280,17 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         if self.params.NIDEC_DESCENT and not gas_override_long:
           v_err = CS.out.vEgo - hud_control.setSpeed  # >0 = over set (m/s)
           if self.descent and v_err >= self.params.NIDEC_DESCENT_BAND_TOP:
-            self.descent_bte = True  # band-top exit: friction trims; re-arm only below REARM
-          elif self.descent_bte and v_err < self.params.NIDEC_DESCENT_BAND_REARM:
-            self.descent_bte = False
+            self.descent_bte = True  # band-top exit: friction trims; re-arm below REARM or on cooldown
+            self.descent_bte_frames = 0
+          elif self.descent_bte:
+            # rev 3 (first drive 7/12): steep-grade friction equilibrium (+0.5..+1.0) sits ABOVE the
+            # REARM line, so geometry alone locked the latch out for the rest of the hill after one
+            # excursion (a8: 17.8 s of friction). Time-bound the sawtooth instead: instant re-arm when
+            # the grade eases (below REARM, as before) OR after REARM_T seconds of trim.
+            self.descent_bte_frames += 1
+            if v_err < self.params.NIDEC_DESCENT_BAND_REARM or \
+               self.descent_bte_frames >= int(self.params.NIDEC_DESCENT_REARM_T / DT_CTRL):
+              self.descent_bte = False
           valid = hud_control.speedVisible and CS.out.vEgo > self.params.NIDEC_DESCENT_V_MIN
           pitch_ok = self.descent_pitch_lp < (self.params.NIDEC_DESCENT_PITCH_OFF if self.descent
                                               else self.params.NIDEC_DESCENT_PITCH_ON)
@@ -516,6 +525,11 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       self.po_filt += (DT_CTRL / 1.0) * (pcm_off - self.po_filt)
       pcm_speed = float(np.clip(CS.out.vEgo + pcm_off, 0.0, 100.0))
       pcm_accel = int(1.0 * self.params.NIDEC_GAS_MAX)
+      # NIDEC_DESCENT_GAS_ZERO (default OFF, premise falsified -- see values.py): stock keeps
+      # PCM_GAS at 198 during its own engine-brake downshifts, so zeroing diverges from stock.
+      # Retained as a last-resort experiment behind the flag.
+      if self.descent and self.params.NIDEC_DESCENT_GAS_ZERO:
+        pcm_accel = 0
     elif (self.CP.carFingerprint in (CAR.ACURA_MDX_3G, CAR.ACURA_MDX_3G_MMR)):
       pcm_speed_V = [0.0,
                      np.clip(CS.out.vEgo - 2.0, 0.0, 100.0),
