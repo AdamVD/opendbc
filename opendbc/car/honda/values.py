@@ -272,6 +272,32 @@ class CarControllerParams:
   NIDEC_TRIM_GFROM_MAX = 7      # only trim announcements stepping down FROM gear <= this
                                 # (G8-10 kickdown surge med +0.1 m/s^2 -- imperceptible, leave alone)
 
+  # ---- Descent mode: engine-brake-first hill descents (SPEC_descent_mode_2026-07-11) ----
+  # Stock ACC engine-brakes grade descents via the PCM speed servo + TCU downshift and ~never
+  # friction-brakes for grade (FINDINGS_stock_grade_behavior_2026-07-06: 43 windows, holds -5.6%
+  # @110kph friction-free; downshifts at +0.8..+6 kph over set). Our per-frame re-anchoring
+  # pcm_speed=vEgo+pcm_off never presents the growing overspeed error that fires it. While
+  # latched (descending, at/over set, demand mild BECAUSE the planner's DESCENT_* floor
+  # tolerates the band -- longitudinal_planner.py), anchor pcm_off=clip((set-BIAS)-vEgo,
+  # PCM_OFF_MIN, 0) so PCM_SPEED holds constant while vEgo grows (stock-identical growing
+  # error, pre-loaded 2 kph -> the downshift fires ~2 kph earlier = tighter than stock) and
+  # zero the friction cover in-band. Friction past the band, on lead/curve demand (the a_des
+  # gate releases same-frame when the planner floor lets a real ask through), or on pedal is
+  # byte-identical to baseline. Trade accepted (Adam 7/11): more/earlier audible downshifts
+  # than stock on gentle grades; BIAS is the single quiet-it-down knob.
+  NIDEC_DESCENT = True              # False = exact prior behavior (A/B)
+  NIDEC_DESCENT_BIAS = 0.56         # m/s (2 kph) anchor pre-load below set -- the "how tight" knob
+  NIDEC_DESCENT_PITCH_ON = -0.012   # rad (~-1.2% grade): latch-enter threshold (LP-filtered pitch)
+  NIDEC_DESCENT_PITCH_OFF = -0.008  # rad (~-0.8%): latch-exit (hysteresis; pitch dither can't flap)
+  NIDEC_DESCENT_PITCH_TAU = 1.0     # s LP on pitch for the latch ONLY (FF paths keep raw pitch)
+  NIDEC_DESCENT_V_MIN = 12.0        # m/s: above the 21.5 mph PCM cancel floor; corpus-validated regime
+  NIDEC_DESCENT_BAND_TOP = 0.83     # m/s (+3 kph over set): band exit -> friction trims (stock rode +6)
+  NIDEC_DESCENT_BAND_REARM = 0.42   # m/s (+1.5 kph): re-enter only below this (bounds the trim cycle)
+  NIDEC_DESCENT_BAND_LOW = -0.5     # m/s below set: low-side exit (grade eased -> gas serving resumes)
+  NIDEC_DESCENT_ADES_MIN = -0.35    # m/s^2: release when a_des drops past this (planner released a
+                                    # real lead/curve/e2e demand -> friction serves same-frame)
+  NIDEC_DESCENT_ADES_REARM = -0.25  # m/s^2: a_des re-arm hysteresis
+
   BOSCH_ACCEL_MIN = -3.5  # m/s^2
   BOSCH_ACCEL_MAX = 2.0  # m/s^2
 
