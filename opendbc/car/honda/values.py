@@ -66,19 +66,21 @@ class CarControllerParams:
                                    # ~0.25 m/s^2 light (P1 downhill deficit +0.27, hill-bottom swing).
   NIDEC_MODEL_GRADE_BLEND_LO = 0.05  # |decel request| where the grade-coefficient blend starts
   NIDEC_MODEL_GRADE_BLEND_HI = 0.35  # ... and where it reaches full 9.81 (passive realm)
-  # Demand-ramped engine-brake credit (2026-07-11 first-drive eval, FINDINGS_gov_first_drive).
-  # The 0.05 constant above is right for the near-zero-demand operating point (the 6/10 passive-
-  # coast measurement: TC unlocked, no commanded lift). But under a COMMANDED pcm_off lift the
-  # PCM keeps the TC locked and holds/downshifts gear -- engine-only small-decel holds delivered
-  # p50 -0.43 on -0.22 asks (x2.0) with ZERO friction, i.e. the lift channel alone provides
-  # ~0.25-0.35 at the floor. friction_ms2 crediting only 0.05 while the DECEL_SOFT map
-  # simultaneously commands the lift to deliver the FULL ask = both channels serving the same
-  # demand -> friction stacked on 64% of small decel holds (factory: ~4% duty). Credit ramps
-  # from the passive 0.05 at zero demand to EB(v) once demand implies a deep lift (po floors
-  # near a_des ~ -0.4 via the DECEL_SOFT map). EB_DYN=False reverts to the flat 0.05.
-  NIDEC_MODEL_EB_DYN = True
+  # Demand-ramped engine-brake credit -- REVERTED OFF same evening (2026-07-11 pm, Adam's
+  # pushback CONFIRMED by lift_plant_check.py, 28k friction-free grade-corrected frames):
+  # flat-grade engine contribution at a FULL commanded lift (po -1.1..-1.6) is only p50
+  # -0.08..-0.11 (p10 -0.19); shallow lift (po -0.2..-0.6) is +0.08 (residual throttle);
+  # downhill -0.14..-0.17. The briefly-shipped EB_V=[0.20,0.30] was based on the 7/11
+  # decel-hold x2 read, which decomposes into friction-active windows + a window-min metric
+  # artifact -- NOT flat-grade lift authority. A 0.2-0.3 credit re-creates the documented
+  # pre-6/10 downhill deficit (+0.27, "P1"): descents lose friction with no compensating
+  # engine brake (stock gets its descent engine-braking from TCU DOWNSHIFTS our constant
+  # vEgo re-anchoring never provokes -- that is the separate descent-mode spec,
+  # FINDINGS stock grade 2026-07-06). Machinery kept for that work; measured honest values
+  # if ever re-armed: EB_V ~[0.08, 0.10] flat. EB_DYN=False = flat 0.05 credit (6/10 ship).
+  NIDEC_MODEL_EB_DYN = False
   NIDEC_MODEL_EB_BP = [10., 30.]    # m/s
-  NIDEC_MODEL_EB_V = [0.20, 0.30]   # m/s^2 credit at full lift (conservative vs measured 0.3-0.45)
+  NIDEC_MODEL_EB_V = [0.08, 0.10]   # m/s^2 credit at full lift (MEASURED flat-grade, lift_plant_check)
   NIDEC_MODEL_EB_FULL_AT = 0.40     # m/s^2 demand at which the lift is ~floored (|a_des| ramp end)
 
   # Model-based longitudinal feedforward for NIDEC_ALT_PCM_ACCEL (Odyssey)
