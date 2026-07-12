@@ -286,17 +286,32 @@ class CarControllerParams:
   # byte-identical to baseline. Trade accepted (Adam 7/11): more/earlier audible downshifts
   # than stock on gentle grades; BIAS is the single quiet-it-down knob.
   NIDEC_DESCENT = True              # False = exact prior behavior (A/B)
-  NIDEC_DESCENT_BIAS = 0.56         # m/s (2 kph) anchor pre-load below set -- the "how tight" knob
+  NIDEC_DESCENT_BIAS = 0.56         # m/s (2 kph) anchor pre-load -- the "how tight" knob. Applied
+                                    # PROPORTIONALLY to overspeed (bias_eff = min(BIAS, max(0, v_err)),
+                                    # review 7/12): a constant pre-load put the anchored equilibrium
+                                    # BELOW set on grades the servo can hold, sagging ~2 kph under and
+                                    # flapping at the BAND_LOW exit; proportional pre-load keeps the
+                                    # equilibrium AT set and ramps the downshift-trigger error only as
+                                    # real overspeed develops.
   NIDEC_DESCENT_PITCH_ON = -0.012   # rad (~-1.2% grade): latch-enter threshold (LP-filtered pitch)
   NIDEC_DESCENT_PITCH_OFF = -0.008  # rad (~-0.8%): latch-exit (hysteresis; pitch dither can't flap)
   NIDEC_DESCENT_PITCH_TAU = 1.0     # s LP on pitch for the latch ONLY (FF paths keep raw pitch)
   NIDEC_DESCENT_V_MIN = 12.0        # m/s: above the 21.5 mph PCM cancel floor; corpus-validated regime
   NIDEC_DESCENT_BAND_TOP = 0.83     # m/s (+3 kph over set): band exit -> friction trims (stock rode +6)
   NIDEC_DESCENT_BAND_REARM = 0.42   # m/s (+1.5 kph): re-enter only below this (bounds the trim cycle)
-  NIDEC_DESCENT_BAND_LOW = -0.5     # m/s below set: low-side exit (grade eased -> gas serving resumes)
-  NIDEC_DESCENT_ADES_MIN = -0.35    # m/s^2: release when a_des drops past this (planner released a
-                                    # real lead/curve/e2e demand -> friction serves same-frame)
-  NIDEC_DESCENT_ADES_REARM = -0.25  # m/s^2: a_des re-arm hysteresis
+  NIDEC_DESCENT_BAND_LOW = -0.5     # m/s below set: low-side exit (grade eased); the anchor may gas
+                                    # back to set (pcm_off up to +|BAND_LOW|) so drag-dominant gentle
+                                    # grades hold set instead of sagging into this exit (review 7/12)
+  NIDEC_DESCENT_ADES_MIN = -0.35    # m/s^2 on actuators.accel (NOT a_des_b -- the grade-FF blend made
+                                    # the gate self-release on steep grades, review 7/12): release when
+                                    # the PID output drops past this (planner released a real demand)
+  NIDEC_DESCENT_ADES_REARM = -0.25  # m/s^2: actuators.accel re-arm hysteresis
+  NIDEC_DESCENT_LEAD_ADES = -0.10   # m/s^2: with a visible lead, ANY sustained decel intent past this
+                                    # releases -- mild lead asks (-0.15..-0.30) must not be tolerated
+                                    # (review 7/12: the -0.35 gate alone suppressed decel toward a
+                                    # closing lead for seconds)
+  NIDEC_DESCENT_FRIC_ENTRY = 0.05   # m/s^2: latch ENTRY requires current friction demand below this
+                                    # (seamless engage -- no one-frame brake dump on re-arm)
 
   BOSCH_ACCEL_MIN = -3.5  # m/s^2
   BOSCH_ACCEL_MAX = 2.0  # m/s^2
@@ -310,6 +325,11 @@ class CarControllerParams:
   STEER_GLOBAL_MIN_SPEED = 3 * CV.MPH_TO_MS
 
   def __init__(self, CP):
+    # Descent-mode tuning trap (review 7/12): the anchor's max presentable error is
+    # BIAS + BAND_TOP; past -PCM_OFF_MIN it silently clips and the growing-error signal
+    # the whole design depends on flattens exactly where the downshift should fire.
+    assert self.NIDEC_DESCENT_BIAS + self.NIDEC_DESCENT_BAND_TOP <= -self.NIDEC_MODEL_PCM_OFF_MIN
+
     self.STEER_MAX = CP.lateralParams.torqueBP[-1]
     # mirror of list (assuming first item is zero) for interp of signed request
     # values and verify that both arrays begin at zero

@@ -165,6 +165,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.descent = False         # engine-brake-first latch
     self.descent_bte = False     # band-top exited: re-entry only below BAND_REARM (sawtooth bound)
     self.descent_pitch_lp = 0.0  # ~1s LP of pitch for the latch only (FF paths keep raw pitch)
+    self.descent_capable = self.params.NIDEC_DESCENT and CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL
 
     self.gasfactor = 1.0 if (Params().get("HondaGasFactorParams") is None) else Params().get("HondaGasFactorParams")
     self.gasfactor_before_maxgas = self.gasfactor
@@ -196,9 +197,10 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     # pcm_off gas path and the direct brake path so they stay mutually exclusive and
     # neither over-compensates for grade (see NIDEC_MODEL_GRADE_G in values.py).
     hill_brake_ff = math.sin(self.pitch) * self.params.NIDEC_MODEL_GRADE_G
-    # ~1s LP of pitch for the descent-mode latch only (runs every frame so the filter is
-    # already settled when the latch conditions are first evaluated)
-    self.descent_pitch_lp += (DT_CTRL / self.params.NIDEC_DESCENT_PITCH_TAU) * (self.pitch - self.descent_pitch_lp)
+    # ~1s LP of pitch for the descent-mode latch only (runs every frame on descent-capable
+    # cars so the filter is already settled when the latch conditions are first evaluated)
+    if self.descent_capable:
+      self.descent_pitch_lp += (DT_CTRL / self.params.NIDEC_DESCENT_PITCH_TAU) * (self.pitch - self.descent_pitch_lp)
 
     # Gas-override handoff (Odyssey): keep the PCM speed-servo commanded while the driver
     # presses the accelerator. The PCM arbitrates pedal-vs-servo max-wins (stock Honda
@@ -262,40 +264,44 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           eb_full = float(np.interp(CS.out.vEgo, self.params.NIDEC_MODEL_EB_BP, self.params.NIDEC_MODEL_EB_V))
           eb_credit = float(np.interp(-a_des_b, [0.0, self.params.NIDEC_MODEL_EB_FULL_AT],
                                       [self.params.NIDEC_MODEL_ENGINE_BRAKE, eb_full]))
-        # Descent-mode latch (SPEC_descent_mode_2026-07-11): engine-brake-first descents. All
-        # gates hysteretic. v_cruise = HUD set speed (m/s; guarded by speedVisible -- a stale
-        # 255 also fails the band by construction). The a_des_b gate is the wire to the
-        # planner's DESCENT_* tolerance floor: while the planner tolerates the band, a_des_b
-        # rides ~-0.1..-0.3 even at -5.6% grade; any released lead/curve/e2e demand drives it
-        # past ADES_MIN -> same-frame release and the friction cover below serves unchanged.
+        # Descent-mode latch (SPEC_descent_mode_2026-07-11, design rev 2 after the 7/12 review):
+        # engine-brake-first descents. All gates hysteretic; v_cruise = HUD set speed (m/s,
+        # driver cluster set; guarded by speedVisible -- a stale 255 also fails the band by
+        # construction). The wire to the planner's DESCENT_* tolerance floor is actuators.accel
+        # (the raw PID output) -- NOT a_des_b: the grade-FF blend multiplies small PID dips by
+        # up to ~2.4x on steep grades and self-released the latch exactly where it matters
+        # (review 7/12). While the planner floor tracks delivered accel, actuators.accel rides
+        # ~0; a real released demand (lead, curve, SCC/SLA, e2e) drives it past ADES_MIN via
+        # the feedforward within a frame or two. With a VISIBLE LEAD any sustained intent past
+        # LEAD_ADES releases -- mild lead asks must never be tolerated. Entry additionally
+        # requires the current friction demand ~ 0 (seamless engage, no one-frame brake dump).
+        fric_demand = max(0.0, -a_des_b - eb_credit - wind_ms2)
         if self.params.NIDEC_DESCENT and not gas_override_long:
           v_err = CS.out.vEgo - hud_control.setSpeed  # >0 = over set (m/s)
+          if self.descent and v_err >= self.params.NIDEC_DESCENT_BAND_TOP:
+            self.descent_bte = True  # band-top exit: friction trims; re-arm only below REARM
+          elif self.descent_bte and v_err < self.params.NIDEC_DESCENT_BAND_REARM:
+            self.descent_bte = False
           valid = hud_control.speedVisible and CS.out.vEgo > self.params.NIDEC_DESCENT_V_MIN
           pitch_ok = self.descent_pitch_lp < (self.params.NIDEC_DESCENT_PITCH_OFF if self.descent
                                               else self.params.NIDEC_DESCENT_PITCH_ON)
-          ades_ok = a_des_b > (self.params.NIDEC_DESCENT_ADES_MIN if self.descent
-                               else self.params.NIDEC_DESCENT_ADES_REARM)
-          if self.descent:
-            band_ok = self.params.NIDEC_DESCENT_BAND_LOW < v_err < self.params.NIDEC_DESCENT_BAND_TOP
-            if not band_ok and v_err >= self.params.NIDEC_DESCENT_BAND_TOP:
-              self.descent_bte = True  # band-top exit: friction trims; re-arm only below REARM
-            self.descent = valid and pitch_ok and band_ok and ades_ok
-          else:
-            # First entry is allowed anywhere in the band: today's steep-descent friction
-            # equilibrium sits at ~+2 kph (knee under-delivery), between REARM and TOP -- an
-            # entry ceiling at REARM could never engage there (measured: 370/975 grade-friction
-            # frames, descent_check.py). REARM only bounds the post-band-top trim sawtooth.
-            if self.descent_bte and v_err < self.params.NIDEC_DESCENT_BAND_REARM:
-              self.descent_bte = False
-            band_hi = self.params.NIDEC_DESCENT_BAND_REARM if self.descent_bte else self.params.NIDEC_DESCENT_BAND_TOP
-            self.descent = (valid and pitch_ok and ades_ok and
-                            self.params.NIDEC_DESCENT_BAND_LOW < v_err < band_hi)
+          # First entry anywhere in the band (steep-descent friction equilibrium sits ~+2 kph,
+          # between REARM and TOP -- descent_check.py 370/975 frames); REARM only bounds the
+          # post-band-top trim sawtooth.
+          band_hi = self.params.NIDEC_DESCENT_BAND_REARM if (not self.descent and self.descent_bte) \
+                    else self.params.NIDEC_DESCENT_BAND_TOP
+          band_ok = self.params.NIDEC_DESCENT_BAND_LOW < v_err < band_hi
+          ades_ok = actuators.accel > (self.params.NIDEC_DESCENT_ADES_MIN if self.descent
+                                       else self.params.NIDEC_DESCENT_ADES_REARM)
+          lead_ok = not (hud_control.leadVisible and actuators.accel < self.params.NIDEC_DESCENT_LEAD_ADES)
+          entry_ok = self.descent or fric_demand < self.params.NIDEC_DESCENT_FRIC_ENTRY
+          self.descent = valid and pitch_ok and band_ok and ades_ok and lead_ok and entry_ok
         else:
           self.descent = False
           self.descent_bte = False
         # In-latch the band IS the demand server (PCM engine brake via its own downshift);
         # past-band / released frames are byte-identical to baseline.
-        friction_ms2 = 0.0 if self.descent else max(0.0, -a_des_b - eb_credit - wind_ms2)
+        friction_ms2 = 0.0 if self.descent else fric_demand
         creep_brake = ((2.3 - CS.out.vEgo) / 2.3 * 0.15) if CS.out.vEgo < 2.3 else 0.0  # legacy stop-hold
         # knee bias: the first ~13 counts produce no decel (hydraulic preload), so demanded friction
         # rides on top of the knee -- keeps light braking (descents, gentle stops) from landing in
@@ -485,16 +491,21 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           pcm_off *= self.params.NIDEC_TRIM_DEPTH + (1.0 - self.params.NIDEC_TRIM_DEPTH) * prog
         self.trim_frames -= 1
 
-      # Descent-mode anchor (SPEC_descent_mode_2026-07-11): while latched, present the PCM the
-      # stock descent signal -- PCM_SPEED held at set-BIAS while vEgo grows = growing overspeed
-      # error (stock's own downshift trigger, pre-loaded ~2 kph so it fires earlier than
-      # stock's +1..+6 kph tolerance). clip to [PCM_OFF_MIN, 0]: never outside the envelope we
-      # already command daily, never adds gas (positive asks stay on the governed path above).
-      # The existing slew below rate-limits the entry step; on release the normal FF value
-      # re-enters through the same slew -- no discontinuity either direction.
+      # Descent-mode anchor (SPEC_descent_mode_2026-07-11, rev 2): while latched, present the
+      # PCM the stock descent signal -- PCM_SPEED anchored near set while vEgo grows = growing
+      # overspeed error (stock's own downshift trigger). The bias pre-load is PROPORTIONAL to
+      # overspeed (up to BIAS at v_err >= BIAS): the downshift fires ~2 kph earlier than stock
+      # once real overspeed develops, while the anchored equilibrium stays AT set -- a constant
+      # pre-load parked it 2 kph under set on grades the servo can hold (review 7/12). Clip
+      # [PCM_OFF_MIN, -BAND_LOW]: never below the envelope we already command daily; the small
+      # positive headroom (+0.5) lets the servo gas back to set on drag-dominant gentle grades
+      # (stock behavior: partial throttle holds set) instead of sagging into the BAND_LOW exit.
+      # The existing slew below rate-limits transitions both directions.
       if self.descent:
-        pcm_off = float(np.clip((hud_control.setSpeed - self.params.NIDEC_DESCENT_BIAS) - CS.out.vEgo,
-                                self.params.NIDEC_MODEL_PCM_OFF_MIN, 0.0))
+        v_err_anchor = CS.out.vEgo - hud_control.setSpeed
+        bias_eff = min(self.params.NIDEC_DESCENT_BIAS, max(0.0, v_err_anchor))
+        pcm_off = float(np.clip((hud_control.setSpeed - bias_eff) - CS.out.vEgo,
+                                self.params.NIDEC_MODEL_PCM_OFF_MIN, -self.params.NIDEC_DESCENT_BAND_LOW))
 
       # asymmetric slew: fast UP so the PCM sees the full request promptly (it must also decide
       # on a downshift -- a slowly-growing request lets gear-hold hysteresis defer the kickdown),
