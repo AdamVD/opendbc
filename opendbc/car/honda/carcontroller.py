@@ -153,6 +153,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.a_des_lp = 0.0      # servo-aware FF: low-pass of a_des for the build-vs-ease latch
     self.po_build = False    # servo-aware FF: True while the accel request is building (onset)
     self.dbo_sus = 0         # DBO: frames the demand has exceeded the nudge-cap reach (sustain gate)
+    self.knee_guard = True   # DBO knee guard: True while demand is sub-threshold (guarded by default)
     self.gas_override_linger = 0  # frames to hold the override path through the release handback
 
     # Tier-1 kickdown-surge trim state (see NIDEC_TRIM_* in values.py)
@@ -241,7 +242,19 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         # under-commanded the brake ~2x on flat ground; droop deficit decomposition +0.95 m/s^2).
         wind_ms2 = float(np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441]))
         a_des_b = actuators.accel + hill_brake_ff
-        friction_ms2 = max(0.0, -a_des_b - self.params.NIDEC_MODEL_ENGINE_BRAKE - wind_ms2)
+        # Demand-ramped engine-brake credit (2026-07-11, FINDINGS_gov_first_drive): the flat 0.05
+        # is the PASSIVE-coast figure (6/10 measurement, TC unlocked); under a commanded pcm_off
+        # lift the PCM keeps the TC locked and holds/downshifts gear, so the lift channel alone
+        # delivers ~EB(v) at the floor while the DECEL_SOFT map is ALREADY commanding it to serve
+        # the full ask -- crediting only 0.05 made friction re-serve the same demand (stacked on
+        # 64% of small decel holds, delivered x1.91; factory friction duty ~4%). Ramp the credit
+        # with demand depth (po floors near |a_des| ~ 0.4 via the DECEL_SOFT map).
+        eb_credit = self.params.NIDEC_MODEL_ENGINE_BRAKE
+        if self.params.NIDEC_MODEL_EB_DYN:
+          eb_full = float(np.interp(CS.out.vEgo, self.params.NIDEC_MODEL_EB_BP, self.params.NIDEC_MODEL_EB_V))
+          eb_credit = float(np.interp(-a_des_b, [0.0, self.params.NIDEC_MODEL_EB_FULL_AT],
+                                      [self.params.NIDEC_MODEL_ENGINE_BRAKE, eb_full]))
+        friction_ms2 = max(0.0, -a_des_b - eb_credit - wind_ms2)
         creep_brake = ((2.3 - CS.out.vEgo) / 2.3 * 0.15) if CS.out.vEgo < 2.3 else 0.0  # legacy stop-hold
         # knee bias: the first ~13 counts produce no decel (hydraulic preload), so demanded friction
         # rides on top of the knee -- keeps light braking (descents, gentle stops) from landing in
@@ -310,6 +323,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       self.a_des_lp = 0.0
       self.po_build = False
       self.dbo_sus = 0
+      self.knee_guard = True
       self.trim_frames = 0
       self.last_tgt_gear = 0
       self.po_filt = 0.0
@@ -385,6 +399,20 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         # hysteresis + a freeze band so unfiltered-pitch dither in a_des around the threshold can
         # neither zero the 1.3s counter nor flap an earned uncap back to PO_CAP mid pull-away.
         uncap_a = float(np.interp(CS.out.vEgo, self.params.NIDEC_DBO_UNCAP_A_BP, self.params.NIDEC_DBO_UNCAP_A_V))
+        # Knee guard (2026-07-11 first-drive, FINDINGS_gov_first_drive): sub-threshold demand parks
+        # at the servo band edge (2.2) so the command CANNOT cross the ~2.5 downshift knee -- small
+        # asks (incl. every governor-capped 0.35 chase ask) mapped to pcm_off 2-3 and delivered
+        # x1.9-2.4 through the kickdown, defeating the cap. Latch shares the uncap gate's hysteresis
+        # band: ON below (uncap_a - HYST), OFF above uncap_a, held in between (pitch dither can't
+        # flap it). Genuine demand (a_des > uncap_a, grade FF included) is untouched: same-frame
+        # release to the PO_CAP/FULL_CAP ladder below.
+        if self.params.NIDEC_DBO_KNEE_GUARD > 0.0:
+          if a_des < uncap_a - self.params.NIDEC_DBO_UNCAP_A_HYST:
+            self.knee_guard = True
+          elif a_des > uncap_a:
+            self.knee_guard = False
+          if self.knee_guard:
+            pcm_off = min(pcm_off, self.params.NIDEC_DBO_KNEE_GUARD)
         if pcm_off > self.params.NIDEC_DBO_PO_CAP and a_des > uncap_a:
           self.dbo_sus += 1
         elif pcm_off <= self.params.NIDEC_DBO_PO_CAP or a_des < uncap_a - self.params.NIDEC_DBO_UNCAP_A_HYST:

@@ -66,6 +66,20 @@ class CarControllerParams:
                                    # ~0.25 m/s^2 light (P1 downhill deficit +0.27, hill-bottom swing).
   NIDEC_MODEL_GRADE_BLEND_LO = 0.05  # |decel request| where the grade-coefficient blend starts
   NIDEC_MODEL_GRADE_BLEND_HI = 0.35  # ... and where it reaches full 9.81 (passive realm)
+  # Demand-ramped engine-brake credit (2026-07-11 first-drive eval, FINDINGS_gov_first_drive).
+  # The 0.05 constant above is right for the near-zero-demand operating point (the 6/10 passive-
+  # coast measurement: TC unlocked, no commanded lift). But under a COMMANDED pcm_off lift the
+  # PCM keeps the TC locked and holds/downshifts gear -- engine-only small-decel holds delivered
+  # p50 -0.43 on -0.22 asks (x2.0) with ZERO friction, i.e. the lift channel alone provides
+  # ~0.25-0.35 at the floor. friction_ms2 crediting only 0.05 while the DECEL_SOFT map
+  # simultaneously commands the lift to deliver the FULL ask = both channels serving the same
+  # demand -> friction stacked on 64% of small decel holds (factory: ~4% duty). Credit ramps
+  # from the passive 0.05 at zero demand to EB(v) once demand implies a deep lift (po floors
+  # near a_des ~ -0.4 via the DECEL_SOFT map). EB_DYN=False reverts to the flat 0.05.
+  NIDEC_MODEL_EB_DYN = True
+  NIDEC_MODEL_EB_BP = [10., 30.]    # m/s
+  NIDEC_MODEL_EB_V = [0.20, 0.30]   # m/s^2 credit at full lift (conservative vs measured 0.3-0.45)
+  NIDEC_MODEL_EB_FULL_AT = 0.40     # m/s^2 demand at which the lift is ~floored (|a_des| ramp end)
 
   # Model-based longitudinal feedforward for NIDEC_ALT_PCM_ACCEL (Odyssey)
   # Plant: aego = K(v) * pcm_off - g*sin(pitch),  K(v) = K0 - K1*v
@@ -223,6 +237,17 @@ class CarControllerParams:
   NIDEC_DBO_UNCAP_A_BP = [25., 40.]  # m/s
   NIDEC_DBO_UNCAP_A_V = [0.5, 0.42]  # m/s^2; count-up threshold on a_des (flat 0.5 below 25 m/s)
   NIDEC_DBO_UNCAP_A_HYST = 0.1       # m/s^2; freeze band below the threshold
+  # Knee guard (2026-07-11 first-drive eval, FINDINGS_gov_first_drive). PO_CAP=3.2 bounds kickdown
+  # DEPTH but sits ABOVE the ~2.5 downshift knee, so a small ask (0.2-0.35, incl. every governor-
+  # capped chase ask) still maps via 1/K to pcm_off 2-3, crosses the knee, and delivers x1.9-2.4
+  # (54 small holds: ask p50 0.22 -> delivered 0.54; governed surges: aTarget pinned 0.35 ->
+  # delivered 0.68-0.84 -> the limit cycle survived the governor). While demand is below the
+  # sustain-uncap threshold, park the command at the servo band edge (PO_EDGE+HOLD_MARGIN=2.2,
+  # same point the servo-aware ease already uses) -- small asks live in the proportional band and
+  # CANNOT fire the downshift; demand above uncap_a keeps today's PO_CAP/FULL_CAP ladder (a_des
+  # includes grade FF, so uphill asks retain authority). Same hysteresis band as the uncap gate
+  # (latch holds inside it) so pitch dither can't flap the guard. 0.0 disables (exact 7/11 ship).
+  NIDEC_DBO_KNEE_GUARD = 2.2  # m/s; pcm_off cap while a_des < uncap_a (0 = off)
   NIDEC_DBO_DAMP = 0.0        # m/s^2; EXPERIMENTAL, default 0 (inactive). >0 coasts a_des below it
                               # (don't command the wanted mild downshift). On-car sag<->frequency
                               # knob ONLY -- unvalidated for frequency, loosens the gap; leave at 0.
