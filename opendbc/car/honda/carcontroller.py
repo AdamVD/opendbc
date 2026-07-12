@@ -163,6 +163,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
 
     # Descent-mode latch state (NIDEC_DESCENT_* in values.py, SPEC_descent_mode_2026-07-11)
     self.descent = False         # engine-brake-first latch
+    self.descent_bte = False     # band-top exited: re-entry only below BAND_REARM (sawtooth bound)
     self.descent_pitch_lp = 0.0  # ~1s LP of pitch for the latch only (FF paths keep raw pitch)
 
     self.gasfactor = 1.0 if (Params().get("HondaGasFactorParams") is None) else Params().get("HondaGasFactorParams")
@@ -272,13 +273,26 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           valid = hud_control.speedVisible and CS.out.vEgo > self.params.NIDEC_DESCENT_V_MIN
           pitch_ok = self.descent_pitch_lp < (self.params.NIDEC_DESCENT_PITCH_OFF if self.descent
                                               else self.params.NIDEC_DESCENT_PITCH_ON)
-          band_ok = self.params.NIDEC_DESCENT_BAND_LOW < v_err < \
-                    (self.params.NIDEC_DESCENT_BAND_TOP if self.descent else self.params.NIDEC_DESCENT_BAND_REARM)
           ades_ok = a_des_b > (self.params.NIDEC_DESCENT_ADES_MIN if self.descent
                                else self.params.NIDEC_DESCENT_ADES_REARM)
-          self.descent = valid and pitch_ok and band_ok and ades_ok
+          if self.descent:
+            band_ok = self.params.NIDEC_DESCENT_BAND_LOW < v_err < self.params.NIDEC_DESCENT_BAND_TOP
+            if not band_ok and v_err >= self.params.NIDEC_DESCENT_BAND_TOP:
+              self.descent_bte = True  # band-top exit: friction trims; re-arm only below REARM
+            self.descent = valid and pitch_ok and band_ok and ades_ok
+          else:
+            # First entry is allowed anywhere in the band: today's steep-descent friction
+            # equilibrium sits at ~+2 kph (knee under-delivery), between REARM and TOP -- an
+            # entry ceiling at REARM could never engage there (measured: 370/975 grade-friction
+            # frames, descent_check.py). REARM only bounds the post-band-top trim sawtooth.
+            if self.descent_bte and v_err < self.params.NIDEC_DESCENT_BAND_REARM:
+              self.descent_bte = False
+            band_hi = self.params.NIDEC_DESCENT_BAND_REARM if self.descent_bte else self.params.NIDEC_DESCENT_BAND_TOP
+            self.descent = (valid and pitch_ok and ades_ok and
+                            self.params.NIDEC_DESCENT_BAND_LOW < v_err < band_hi)
         else:
           self.descent = False
+          self.descent_bte = False
         # In-latch the band IS the demand server (PCM engine brake via its own downshift);
         # past-band / released frames are byte-identical to baseline.
         friction_ms2 = 0.0 if self.descent else max(0.0, -a_des_b - eb_credit - wind_ms2)
@@ -295,6 +309,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
       accel = 0.0
       gas, brake = 0.0, 0.0
       self.descent = False
+      self.descent_bte = False
 
     # *** rate limit steer ***
     limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
