@@ -250,6 +250,15 @@ class CarControllerParams:
   # includes grade FF, so uphill asks retain authority). Same hysteresis band as the uncap gate
   # (latch holds inside it) so pitch dither can't flap the guard. 0.0 disables (exact 7/11 ship).
   NIDEC_DBO_KNEE_GUARD = 2.2  # m/s; pcm_off cap while a_des < uncap_a (0 = off)
+  # Knee-guard input (2026-07-18 uphill-follow root cause, FINDINGS_uphill_follow_2026-07-18):
+  # testing the guard on grade-FF-INFLATED a_des released it on every steep-grade chase -- the
+  # capped 0.35 ask + 2.2*sin(theta) crossed uncap_a exactly where the downshift's consequences
+  # are worst (retained-low-gear limit cycle, ~10s period, route c2 @6%). RAW=True latches the
+  # guard on actuators.accel instead: a genuine climb still releases it (speed sag drives the
+  # raw PID ask past uncap_a within a few s), and the PCM self-downshifts under load at the
+  # 2.2 park anyway (observed) -- we just stop COMMANDING kickdown depth for grade FF alone.
+  # False = exact 7/11 behavior (a_des test).
+  NIDEC_DBO_KNEE_GUARD_RAW = True
   NIDEC_DBO_DAMP = 0.0        # m/s^2; EXPERIMENTAL, default 0 (inactive). >0 coasts a_des below it
                               # (don't command the wanted mild downshift). On-car sag<->frequency
                               # knob ONLY -- unvalidated for frequency, loosens the gap; leave at 0.
@@ -271,6 +280,29 @@ class CarControllerParams:
                                 # gas briefly on a real (if benign) downshift.
   NIDEC_TRIM_GFROM_MAX = 7      # only trim announcements stepping down FROM gear <= this
                                 # (G8-10 kickdown surge med +0.1 m/s^2 -- imperceptible, leave alone)
+
+  # ---- Low-gear lift guard (2026-07-18, FINDINGS_uphill_follow_2026-07-18) ----
+  # Gear-resolved lift plant ID (plant_gear_id_0718.py, 403k engaged frames): in top gears the
+  # throttle-shut lift delivers the modeled ~+0.05..0.07 EB, but in a downshifted gear the lift
+  # response is BIMODAL -- torque persists 1-3s after the command (uphill rn>=1.35 lift windows
+  # show LESS decel than gravity alone, p50 -0.27..-0.40 "EB"), then snaps to fuel-cut + low-gear
+  # EB (the trace-verified -1.07 delivered on a -0.5 ask, cb=0). A proportional inverse-K map
+  # cannot represent that plant. Meanwhile pcm_off in [-0.3, +0.3] holds aEgo ~= 0 on ANY grade
+  # (n=97k frames incl. 4-8% downshifted) -- the servo-modulation band is safe and predictable.
+  # While the engine is in kickdown state (rpm latch below), a decel ask therefore:
+  #   - floors pcm_off at LIFT_PO_FLOOR (stay in the modulation band; never command the snap)
+  #   - zeroes the engine-brake credit (it is a lie in this state -- bimodal, unschedulable),
+  #     so the friction channel (linear, measured 2.78 plant) serves what gravity cannot.
+  # Skipped while descent-mode is latched/trimming (rev 3 owns that envelope byte-identically).
+  # rpm=0 (signal absent) leaves the guard off -> exact prior behavior.
+  NIDEC_LIFT_GUARD = True
+  NIDEC_LIFT_GUARD_RPM_ON = 1900.   # rpm; latch on above (10th-gear cruise ~1450-1550 @ 75mph)
+  NIDEC_LIFT_GUARD_RPM_OFF = 1650.  # rpm; release below (hysteresis vs TC-lockup dither)
+  # The clamp is TWO-SIDED while the raw ask is a decel: the w_passive blend inverts deep uphill
+  # decel asks into positive a_des (c2 t=54s: act_a -0.37 -> wire po +3.2), which the accel paths
+  # then serve as a low-gear PULL -- cap at the hold-band edge too (replay_fix_check_0718.py).
+  NIDEC_LIFT_PO_FLOOR = -0.30       # m/s; deepest lift command while guarded (Q3 band edge)
+  NIDEC_LIFT_PO_CEIL = 0.30         # m/s; highest command while guarded on a raw decel ask
 
   # ---- Descent mode: engine-brake-first hill descents (SPEC_descent_mode_2026-07-11) ----
   # Stock ACC engine-brakes grade descents via the PCM speed servo + TCU downshift and ~never

@@ -154,6 +154,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.po_build = False    # servo-aware FF: True while the accel request is building (onset)
     self.dbo_sus = 0         # DBO: frames the demand has exceeded the nudge-cap reach (sustain gate)
     self.knee_guard = True   # DBO knee guard: True while demand is sub-threshold (guarded by default)
+    self.lift_guard = False  # low-gear lift guard: engine-rpm latch (NIDEC_LIFT_GUARD_* in values.py)
     self.gas_override_linger = 0  # frames to hold the override path through the release handback
 
     # Tier-1 kickdown-surge trim state (see NIDEC_TRIM_* in values.py)
@@ -202,6 +203,19 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     # cars so the filter is already settled when the latch conditions are first evaluated)
     if self.descent_capable:
       self.descent_pitch_lp += (DT_CTRL / self.params.NIDEC_DESCENT_PITCH_TAU) * (self.pitch - self.descent_pitch_lp)
+
+    # Low-gear lift guard latch (NIDEC_LIFT_GUARD, FINDINGS_uphill_follow_2026-07-18): engine rpm
+    # is the kickdown-state proxy -- above RPM_ON the throttle-shut lift plant is bimodal (torque
+    # persists, then fuel-cut snaps well past mild asks), so decel asks must stay in the servo
+    # modulation band and let friction serve the remainder. Hysteretic; rpm=0 (no signal) -> off.
+    engine_rpm = getattr(CS, "engine_rpm", 0.0)
+    if engine_rpm > self.params.NIDEC_LIFT_GUARD_RPM_ON:
+      self.lift_guard = True
+    elif engine_rpm < self.params.NIDEC_LIFT_GUARD_RPM_OFF:
+      self.lift_guard = False
+    # descent-mode (prev frame's latch/trim state) owns its envelope -- guard stands aside there
+    lift_guard_active = (self.params.NIDEC_LIFT_GUARD and self.lift_guard
+                         and not self.descent and not self.descent_bte)
 
     # Gas-override handoff (Odyssey): keep the PCM speed-servo commanded while the driver
     # presses the accelerator. The PCM arbitrates pedal-vs-servo max-wins (stock Honda
@@ -265,6 +279,11 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           eb_full = float(np.interp(CS.out.vEgo, self.params.NIDEC_MODEL_EB_BP, self.params.NIDEC_MODEL_EB_V))
           eb_credit = float(np.interp(-a_des_b, [0.0, self.params.NIDEC_MODEL_EB_FULL_AT],
                                       [self.params.NIDEC_MODEL_ENGINE_BRAKE, eb_full]))
+        if lift_guard_active:
+          # kickdown state: the EB credit is unschedulable (bimodal lift plant) -- let the
+          # measured-linear friction channel serve what gravity cannot (uphill blend already
+          # priced gravity into a_des_b). Pairs with the LIFT_PO_FLOOR clamp on the pcm_off path.
+          eb_credit = 0.0
         # Descent-mode latch (SPEC_descent_mode_2026-07-11, design rev 2 after the 7/12 review):
         # engine-brake-first descents. All gates hysteretic; v_cruise = HUD set speed (m/s,
         # driver cluster set; guarded by speedVisible -- a stale 255 also fails the band by
@@ -465,9 +484,14 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         # flap it). Genuine demand (a_des > uncap_a, grade FF included) is untouched: same-frame
         # release to the PO_CAP/FULL_CAP ladder below.
         if self.params.NIDEC_DBO_KNEE_GUARD > 0.0:
-          if a_des < uncap_a - self.params.NIDEC_DBO_UNCAP_A_HYST:
+          # KNEE_GUARD_RAW (2026-07-18): latch on the RAW ask, not grade-FF-inflated a_des --
+          # on steep grades the FF term alone released the guard for every capped chase ask,
+          # firing the kickdown at the worst moment (uphill-follow limit cycle). A real climb
+          # still releases: speed sag drives the raw PID ask past uncap_a within a few seconds.
+          guard_a = actuators.accel if self.params.NIDEC_DBO_KNEE_GUARD_RAW else a_des
+          if guard_a < uncap_a - self.params.NIDEC_DBO_UNCAP_A_HYST:
             self.knee_guard = True
-          elif a_des > uncap_a:
+          elif guard_a > uncap_a:
             self.knee_guard = False
           if self.knee_guard:
             pcm_off = min(pcm_off, self.params.NIDEC_DBO_KNEE_GUARD)
@@ -499,6 +523,20 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           prog = 1.0 - self.trim_frames * DT_CTRL / self.params.NIDEC_TRIM_DECAY_S
           pcm_off *= self.params.NIDEC_TRIM_DEPTH + (1.0 - self.params.NIDEC_TRIM_DEPTH) * prog
         self.trim_frames -= 1
+
+      # Low-gear lift guard clamp (NIDEC_LIFT_GUARD, FINDINGS_uphill_follow_2026-07-18): while
+      # the engine is in kickdown state and the RAW ask is a decel, pin the command inside the
+      # measured hold band -- pcm_off in [-0.3, +0.3] delivers aEgo ~0 on any grade (plant ID Q3,
+      # 97k frames), while anything outside it in low gear either keeps pulling (+0.15 sustained
+      # for any po>0.3) or snaps through fuel-cut EB to ~2x the ask. Two-sided ON PURPOSE and
+      # keyed on actuators.accel: on steep grades the w_passive gravity blend INVERTS a deep
+      # decel ask into positive a_des (route c2 t=54s: act_a -0.37 -> wire po +3.2), so the
+      # accel-side paths above (band-edge park, DBO ladder) treat it as gas demand -- the raw
+      # sign is the true intent. Friction (eb_credit zeroed above) serves what gravity cannot.
+      # Placed after all accel-path shaping; the descent anchor below still overrides in-latch
+      # (lift_guard_active already excludes descent/bte frames).
+      if lift_guard_active and (a_des < 0.0 or actuators.accel < 0.0):
+        pcm_off = float(np.clip(pcm_off, self.params.NIDEC_LIFT_PO_FLOOR, self.params.NIDEC_LIFT_PO_CEIL))
 
       # Descent-mode anchor (SPEC_descent_mode_2026-07-11, rev 2): while latched, present the
       # PCM the stock descent signal -- PCM_SPEED anchored near set while vEgo grows = growing
