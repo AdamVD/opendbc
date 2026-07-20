@@ -259,6 +259,16 @@ class CarControllerParams:
   # 2.2 park anyway (observed) -- we just stop COMMANDING kickdown depth for grade FF alone.
   # False = exact 7/11 behavior (a_des test).
   NIDEC_DBO_KNEE_GUARD_RAW = True
+  # Lead hold (2026-07-19, FINDINGS_overshoot_pull_2026-07-19): the RAW release path still fired
+  # a commanded kickdown INTO the follow mark -- d3 t529 (6% climb): hill starts, guarded po parks
+  # at 2.2, speed sags 3 mph, PID ask crosses uncap_a "by design", po 3.2 -> downshift lands with
+  # a matched lead at THW 2.2/vRel 0 -> fresh-downshift gear pulls +0.3 for 10 s (62->70 mph
+  # uphill) against a plan capped at 0 -> overshoot to THW 0.90 + cb 0.73. With a lead visible,
+  # never release the knee guard or the sustain-uncap ladder past the 2.2 park: the PCM still
+  # self-downshifts under sustained load at the park (observed d4 t999 and on stock -- stock never
+  # commands kickdown depth either), we just don't ASK for it while there is someone to run into.
+  # Open-road climbs (no lead) keep the 7/18 release exactly. False -> exact 7/18 behavior.
+  NIDEC_DBO_LEAD_HOLD = True
   NIDEC_DBO_DAMP = 0.0        # m/s^2; EXPERIMENTAL, default 0 (inactive). >0 coasts a_des below it
                               # (don't command the wanted mild downshift). On-car sag<->frequency
                               # knob ONLY -- unvalidated for frequency, loosens the gap; leave at 0.
@@ -298,6 +308,29 @@ class CarControllerParams:
   NIDEC_LIFT_GUARD = True
   NIDEC_LIFT_GUARD_RPM_ON = 1900.   # rpm; latch on above (10th-gear cruise ~1450-1550 @ 75mph)
   NIDEC_LIFT_GUARD_RPM_OFF = 1650.  # rpm; release below (hysteresis vs TC-lockup dither)
+  # ---- 7/19 first-drive fixes (FINDINGS_overshoot_pull_2026-07-19) ----
+  # (a) LATCH LEAK: the rpm hysteresis conflated "rpm above release" with "kickdown state" --
+  # RPM_OFF=1650 sits BELOW normal mid-gear cruise rpm (9th ~1660 @ 50mph, 8th ~1840 @ 67mph),
+  # so one crossing of 1900 kept the guard latched through 36.4% of 7/19 engaged time, including
+  # plain 9th-gear cruising where the lift plant is healthy (all 10 EASED approaches unlatched,
+  # all 3 LATE_BRAKE latched -- overshoot_scan_0719.py). Latch instead on the GEAR RATIO
+  # engine_rpm/xmission_speed (rpm per kph; XMISSION_SPEED is kph, factor 0.01), which clusters
+  # cleanly per gear: 15.7 (10th) / 17.6 / 21.1 cruise states vs 26.9+ in the retained-kickdown
+  # states that actually lift bimodally. RATIO=False -> exact 7/18 rpm-hysteresis behavior.
+  NIDEC_LIFT_GUARD_RATIO = True
+  NIDEC_LIFT_RATIO_ON = 24.0        # rpm/kph; latch on above (kickdown cluster 26.9; cruise max 21.1)
+  NIDEC_LIFT_RATIO_OFF = 22.5       # rpm/kph; release below (hysteresis vs in-shift ratio sweep)
+  NIDEC_LIFT_RATIO_XSPD_MIN = 20.0  # kph; below this the ratio is TC-slip/near-zero noise -> guard off
+  # (b) PHANTOM CREDITS while clamped: the guard pins po in the hold band, i.e. the PCM
+  # speed-servo HOLDS SPEED WITH THE THROTTLE OPEN -- aero (wind_ms2) and the gravity blend
+  # (hill_brake_ff) are not decelerating the car, yet fric_demand still subtracted both. Light
+  # decel asks (-0.05..-0.5 flat, to -0.9 on 6% up) therefore delivered ~nothing (7/19 latched
+  # delivery error p50 +0.24 vs +0.04 unlatched) until the ask outgrew the credits and friction
+  # served the accumulated demand at once (d4 t1038: cb 1.85 at THW 1.6; d3 t529: cb 0.73 at
+  # THW 0.90 = Adam's "light steady pull ... then oversized slowdown"). While guarded-and-
+  # clamped, friction serves the RAW ask: no eb/wind/hill credit (the hold band holds aEgo~0 on
+  # any grade -- the servo cancels grade and aero alike). False -> exact 7/18 credit accounting.
+  NIDEC_LIFT_HONEST_FRICTION = True
   # The clamp is TWO-SIDED while the raw ask is a decel: the w_passive blend inverts deep uphill
   # decel asks into positive a_des (c2 t=54s: act_a -0.37 -> wire po +3.2), which the accel paths
   # then serve as a low-gear PULL -- cap at the hold-band edge too (replay_fix_check_0718.py).

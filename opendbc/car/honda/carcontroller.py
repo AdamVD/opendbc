@@ -209,7 +209,19 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     # persists, then fuel-cut snaps well past mild asks), so decel asks must stay in the servo
     # modulation band and let friction serve the remainder. Hysteretic; rpm=0 (no signal) -> off.
     engine_rpm = getattr(CS, "engine_rpm", 0.0)
-    if engine_rpm > self.params.NIDEC_LIFT_GUARD_RPM_ON:
+    if self.params.NIDEC_LIFT_GUARD_RATIO:
+      # 7/19 latch-leak fix (FINDINGS_overshoot_pull_2026-07-19): rpm hysteresis kept the guard
+      # on through normal mid-gear cruise (9th ~1660 rpm @ 50mph > RPM_OFF) -- 36.4% of engaged
+      # time. The gear ratio rpm/kph separates cruise (<=21.1) from retained-kickdown (26.9+)
+      # cleanly; below XSPD_MIN the ratio is slip noise and the guard stays off (PCM long is
+      # floor-canceled below 21.5 mph anyway).
+      xspd = getattr(CS, "xmission_speed", 0.0)
+      gear_ratio = engine_rpm / xspd if xspd > self.params.NIDEC_LIFT_RATIO_XSPD_MIN else 0.0
+      if gear_ratio > self.params.NIDEC_LIFT_RATIO_ON:
+        self.lift_guard = True
+      elif gear_ratio < self.params.NIDEC_LIFT_RATIO_OFF:
+        self.lift_guard = False
+    elif engine_rpm > self.params.NIDEC_LIFT_GUARD_RPM_ON:
       self.lift_guard = True
     elif engine_rpm < self.params.NIDEC_LIFT_GUARD_RPM_OFF:
       self.lift_guard = False
@@ -296,6 +308,17 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         # LEAD_ADES releases -- mild lead asks must never be tolerated. Entry additionally
         # requires the current friction demand ~ 0 (seamless engage, no one-frame brake dump).
         fric_demand = max(0.0, -a_des_b - eb_credit - wind_ms2)
+        # Honest friction while guarded-and-clamped (2026-07-19, FINDINGS_overshoot_pull): the
+        # condition mirrors the po clamp below -- on these frames the command is pinned in the
+        # hold band, so the PCM servo holds speed with the throttle OPEN. Aero (wind_ms2) and
+        # the gravity blend (inside a_des_b) are credits for a LIFTED throttle and are phantom
+        # here; subtracting them created a light-decel dead zone (asks to -0.5 flat / -0.9 on
+        # 6% up delivered ~0) that ended in one oversized brake at short range (d4 t1038:
+        # cb 1.85 at THW 1.6). Serve the raw ask with friction alone -- the servo cancels grade
+        # and aero symmetrically (hold band holds aEgo~0 on any grade, plant ID Q3).
+        if lift_guard_active and self.params.NIDEC_LIFT_HONEST_FRICTION and \
+           (actuators.accel + hill_brake_ff < 0.0 or actuators.accel < 0.0):
+          fric_demand = max(0.0, -actuators.accel)
         if self.params.NIDEC_DESCENT and not gas_override_long:
           v_err = CS.out.vEgo - hud_control.setSpeed  # >0 = over set (m/s)
           if self.descent and v_err >= self.params.NIDEC_DESCENT_BAND_TOP:
@@ -493,7 +516,15 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
             self.knee_guard = True
           elif guard_a > uncap_a:
             self.knee_guard = False
-          if self.knee_guard:
+          # Lead hold (2026-07-19, FINDINGS_overshoot_pull): the raw release still fired a
+          # commanded kickdown INTO the follow mark (d3 t529: uphill speed-sag released the
+          # guard with a matched lead at THW 2.2 -> 10 s of +0.3 pull against a 0-capped plan,
+          # overshoot to THW 0.90). With a lead visible, hold the 2.2 park regardless of the
+          # release state -- the PCM self-downshifts under sustained load at the park when it
+          # truly must (observed d4 t999; stock never commands kickdown depth either). Also
+          # floors the sustain-uncap ladder below (pcm_off <= 2.2 < PO_CAP never counts up).
+          # No lead = exact 7/18 release.
+          if self.knee_guard or (self.params.NIDEC_DBO_LEAD_HOLD and hud_control.leadVisible):
             pcm_off = min(pcm_off, self.params.NIDEC_DBO_KNEE_GUARD)
         if pcm_off > self.params.NIDEC_DBO_PO_CAP and a_des > uncap_a:
           self.dbo_sus += 1

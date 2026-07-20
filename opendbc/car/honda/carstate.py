@@ -63,6 +63,7 @@ class CarState(CarStateBase, CarStateExt):
     self.trans_actual_gear = 0
     self.trans_shift_active = False
     self.engine_rpm = 0.0  # ENGINE_DATA; kickdown-state proxy for the low-gear lift guard
+    self.xmission_speed = 0.0  # ENGINE_DATA kph; with engine_rpm gives the gear ratio (latch input)
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -94,6 +95,7 @@ class CarState(CarStateBase, CarStateExt):
     # STANDSTILL->WHEELS_MOVING bit can be noisy around zero, so use XMISSION_SPEED
     lowspeed_source = cp.vl["CAR_SPEED"]["CAR_SPEED"] if self.CP.carFingerprint == CAR.ACURA_INTEGRA else cp.vl["ENGINE_DATA"]["XMISSION_SPEED"]
     self.engine_rpm = float(cp.vl["ENGINE_DATA"]["ENGINE_RPM"]) if self.CP.carFingerprint != CAR.ACURA_INTEGRA else 0.0
+    self.xmission_speed = float(cp.vl["ENGINE_DATA"]["XMISSION_SPEED"]) if self.CP.carFingerprint != CAR.ACURA_INTEGRA else 0.0
     v_wheel = sum([cp.vl["WHEEL_SPEEDS"][f"WHEEL_SPEED_{s}"] for s in ("FL", "FR", "RL", "RR")]) / 4.0 * CV.KPH_TO_MS
     v_weight = float(np.interp(v_wheel, v_weight_bp, v_weight_v))
     ret.vEgoRaw = (1. - v_weight) * lowspeed_source * CV.KPH_TO_MS * self.CP.wheelSpeedFactor + v_weight * v_wheel
