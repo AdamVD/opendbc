@@ -150,6 +150,7 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.bosch_last_gas = 0
 
     self.last_pcm_off = 0.0  # for rate-limiting in model-based NIDEC FF
+    self.dither_lfsr = 0x5A  # servo-ID dither PRBS-7 state (NIDEC_DITHER_* in values.py)
     self.a_des_lp = 0.0      # servo-aware FF: low-pass of a_des for the build-vs-ease latch
     self.po_build = False    # servo-aware FF: True while the accel request is building (onset)
     self.dbo_sus = 0         # DBO: frames the demand has exceeded the nudge-cap reach (sustain gate)
@@ -584,6 +585,24 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         bias_eff = min(self.params.NIDEC_DESCENT_BIAS, max(0.0, v_err_anchor))
         pcm_off = float(np.clip((hud_control.setSpeed - bias_eff) - CS.out.vEgo,
                                 self.params.NIDEC_MODEL_PCM_OFF_MIN, -self.params.NIDEC_DESCENT_BAND_LOW))
+
+      # Servo-ID dither (2026-07-24, plant-simulator campaign): PRBS-7 overlay inside the
+      # measured null band (pcm_off in [-0.3,+0.3] holds aEgo~0 on any grade -- uphill
+      # plant-ID, 97k frames). Persistent excitation that passive driving never provides:
+      # breaks the closed-loop po<->state correlation and identifies servo tau + small-signal
+      # s[gear] (the map cells three independent fits disagree on 2x). INERT by default
+      # (AMP=0.0); when armed, applies only in calm cruise -- no lead, no override, tiny ask,
+      # not in descent/lift-guard, v>15 m/s. Perceptual bound: 0.3 * K~0.12 ~= 0.04 m/s^2,
+      # below the ~0.05-0.1 sustained-accel threshold. Runs BEFORE the slew (a +-0.3 step
+      # traverses in ~50 ms -- effectively square at the wire).
+      if (self.params.NIDEC_DITHER_AMP > 0.0 and CC.longActive and not gas_override_long
+          and not self.descent and not lift_guard_active
+          and not hud_control.leadVisible and abs(actuators.accel) < 0.15
+          and CS.out.vEgo > 15.0 and not CS.out.brakePressed):
+        if self.frame % max(int(self.params.NIDEC_DITHER_DWELL_S / DT_CTRL), 1) == 0:
+          bit = ((self.dither_lfsr >> 6) ^ (self.dither_lfsr >> 5)) & 1   # x^7+x^6+1
+          self.dither_lfsr = ((self.dither_lfsr << 1) | bit) & 0x7F
+        pcm_off += self.params.NIDEC_DITHER_AMP * (1.0 if (self.dither_lfsr & 1) else -1.0)
 
       # asymmetric slew: fast UP so the PCM sees the full request promptly (it must also decide
       # on a downshift -- a slowly-growing request lets gear-hold hysteresis defer the kickdown),

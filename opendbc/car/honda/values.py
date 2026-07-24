@@ -124,6 +124,14 @@ class CarControllerParams:
                                  # margin on a slowing lead. Tune on-car.
   NIDEC_MODEL_RATE = 6.0        # pcm_off rate limit DOWNWARD (m/s per s). Governs ease-off smoothness;
                                 # works with DECEL_SOFT to keep the graded lift-off (don't raise casually).
+  NIDEC_DITHER_AMP = 0.0        # servo-ID dither amplitude (m/s pcm_off). 0.0 = INERT (default).
+                                # Experiment value: 0.3 (the validated aEgo~0 null band edge). Only
+                                # applies in calm no-lead cruise; see carcontroller gating. Purpose:
+                                # persistent excitation for servo tau + small-signal s[gear] ID
+                                # (plant-simulator campaign 2026-07-24). Flip for ONE supervised
+                                # 20-30 min highway drive, then back to 0.0.
+  NIDEC_DITHER_DWELL_S = 0.8    # dither PRBS chip duration (s). 0.8 s spans the servo tau range
+                                # (0.2-2 s) with energy on both sides.
   NIDEC_MODEL_RATE_UP = 10.0    # pcm_off rate limit UPWARD (m/s per s). 2026-06-09 rlog step analysis
                                 # (drive 00000027): gas response t_half scales with ask amplitude
                                 # (0.4s @ +0.3 ask, 1.35s @ +0.9-1.1) = slew-limit fingerprint, and
