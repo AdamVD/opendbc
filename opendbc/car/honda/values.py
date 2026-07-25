@@ -402,6 +402,105 @@ class CarControllerParams:
                                     # grades where the pre-rev-3 bte lockout kept our anchor out, so
                                     # sustained engagement (REARM_T) is the real downshift lever.
 
+  # ---- Brake-channel discipline: "no spammy light braking EVER" (2026-07-25) ----
+  # Three knobs, one defect family (plus two that shape the committed bite's release).
+  # Evidence: the 2026-07-25 brake-candidate scoreboard
+  # (100 Hz testbench replaying the Honda friction path, IoU 98.3/98.4/99.3% vs the recorded
+  # 0x1FA on e7/e9/pre; invariant sweep over 30 routes / 595.6 engaged minutes) and
+  # FINDINGS_cloop_ship_validation_2026-07-25 (closed loop: real LongControl + real
+  # CarController + identified plant v2.2 + real KF1D aEgo estimator).
+  # The measured signature this replaces (shipping code, same corpus): 621 friction
+  # applications that are either below the felt floor (<0.20 m/s^2 peak) or shorter than
+  # 1.0 s; on the NYC bad leg 8.66 felt events/min against Adam's own manual 0.75/min, in
+  # pulse trains. Behaviour-cloned from Adam's own driving, 89-100% of openpilot's friction
+  # applications land in states where his policy gives P(brake) < 0.20 (he: 6%, factory ACC:
+  # 25%) -- a DECISION defect, not a delivery defect.
+  # Closed-loop result with all three on (e7 / e9): felt applications 6.62 -> 1.15 and
+  # 0.11 -> 0.18 per min, sub-feel applications 2.04 / 0.16 -> 0.00 / 0.00, pulse trains
+  # 6 / 0 -> 0 / 0, invariant violations 59 / 16 -> 0 / 0, VSA pump duty 2.96 / 0.65 ->
+  # 0.89 / 0.19%, friction duty 5.47 / 1.16 -> 3.49 / 0.73%. Worst brake-application jerk
+  # step FALLS (e7 0.615 -> 0.464, e9 0.603 -> 0.186 m/s^3), THWmin 0.476 -> 0.495 and
+  # TTCmin 10.89 -> 13.87 s (e7): lead geometry improves, it does not degrade.
+  # ⚠ STAGING (enforced by the assert in __init__): CREDIT_CLAMP alone is drivable;
+  # FRIC_MIN_AMP alone or CREDIT_CLAMP+FRIC_MIN_AMP is NOT -- that arm ("clamp_amp") is the
+  # only candidate measured worse than shipping on BOTH validation drives.
+  NIDEC_GRADE_CREDIT_CLAMP = True
+  # The grade feed-forward may never push the pcm_off COMMAND positive on a decel ask.
+  # False = exact prior behaviour. pcm_off derives from a_des = actuators.accel +
+  # hill_brake_ff, so uphill the grade credit flipped a decel ask into a gas request: over
+  # 115 engaged min, mild-decel frames (accel in [-0.6,-0.1]) with pcm_off > 0 ran 3.2% at
+  # 1-2% grade, 18.2% at 2-3%, 49.4% at 3-4% and 75.6% above +4%. That BOTH commanded the
+  # PCM above vEgo against the ask AND grade-activated the `last_pcm_off > 0` friction
+  # guardrail below, which then zeroed the brake exactly where the ask needed serving --
+  # the 2026-07-24 quartet-drive chatter (13.2 bite on/off + 13.8 pump kicks per engaged
+  # minute). With this clamp the >+4% figure is 1.1%. Removing the channel DISAGREEMENT is
+  # why this collapses the published gas-vs-brake Pareto frontier: same brake trace as the
+  # `gate_raw` alternative (which overrode the guardrail instead) at 0.054% simultaneous
+  # gas+brake command frames vs its 0.621%. Closed loop it also makes the PID back OFF
+  # (mean ask +0.047 e7 / +0.014 e9 -- the largest ask shift any candidate produced).
+  NIDEC_FRIC_MIN_AMP = 0.20
+  # m/s^2; friction demands below this are dropped (coast instead). 0.0 = prior behaviour.
+  # P6: a brake too small to feel should not be used at all -- it is pad wear, a VSA pump
+  # cycle and a brake-light flicker for zero authority (0 of Adam's own 117 manual
+  # applications deliver < 0.20 m/s^2). This is ALSO the coast-authority rule: measured
+  # closed-throttle authority in gears 7-10 at 20-40 m/s is 0.13-0.25 m/s^2 grade-free
+  # (corpus, CAR_GAS <= 4 counts; the identified plant agrees at 0.176 in 10th @ 32 m/s) --
+  # "too small to feel" and "smaller than coasting delivers anyway" are the same threshold
+  # on this car. NOTE this also feeds the descent-entry test (fric_demand <
+  # NIDEC_DESCENT_FRIC_ENTRY); measured effect on descent coverage +0.00 pp (quartet),
+  # +0.07 pp (trio). ⚠ Must not ship without NIDEC_BRAKE_MIN_DWELL -- see the staging note.
+  NIDEC_BRAKE_MIN_DWELL = 2.0
+  # s; POST-gate minimum COMMITTED friction bite. 0.0 = prior behaviour.
+  # With FRIC_MIN_AMP this makes the hard invariant structural: every application whose
+  # amplitude comes from `friction_ms2` has peak >= 31 apply_brake counts (= 0.196 m/s^2,
+  # one count of int() truncation below the nominal 0.20) and duration >= this, BY
+  # CONSTRUCTION (verified 0 violations over 595.6 engaged minutes / 30 routes and 0 over
+  # both closed-loop drives; 142 instrumented commits, 0 bad, min committed amplitude 31
+  # counts, min measured peak 0.241 m/s^2).
+  # ⚠ SCOPE (2026-07-25 envelope, corrected): the legacy sub-2.3 m/s `creep_brake` ramp is
+  # NOT covered -- it drives apply_brake to 19-32 counts (0.065-0.206 m/s^2) with
+  # friction_ms2 == 0, i.e. below the felt floor, identically in this and the prior code.
+  # The commit is gated on friction_ms2 > 0 so creep can no longer commit a DWELL, but the
+  # felt floor genuinely does not apply to it. Measured unreachable while engaged on this
+  # car (0 engaged frames under 2.3 m/s over 130 routes / 119.3 engaged min, min engaged
+  # vEgo 4.97 m/s, because the PCM cancels ACC at ~21.5 mph) -- with the caveat that the
+  # one route known to contain OP-controlled full stops (`2e`) is not in the local cache,
+  # so "unreachable" is unproven. Pinned by TestLowSpeedGap.
+  # 2.0 rather than 1.0: 1.0 SPLITS one application into two (~0.1 s release blips between
+  # back-to-back 1 s bites) and still leaves pulse trains (1 first-order, 2 closed-loop on
+  # e9); 2.0 leaves 0 trains on both drives, holds the same total brake time in ~40% fewer
+  # commitments (e7 48 -> 28, e9 69 -> 42), min inter-onset gap 1.06 -> 2.04 s, and pump
+  # duty FALLS. 2.0 s is also Adam's own median application duration. Above ~1.5 s a pulse
+  # train is impossible by construction (onsets can no longer be 0.2-1.5 s apart).
+  NIDEC_BRAKE_HOLD_RELEASE_A = 0.20
+  # m/s^2; release the committed bite early when the PLAN asks for at least this much
+  # positive accel, sustained for NIDEC_BRAKE_HOLD_RELEASE_T. <= 0.0 disables the release.
+  # A THRESHOLD, not the published bare `actuators.accel > 0`: that form was rejected twice
+  # on evidence, but both rejections were measured on traces whose entire dwell overhang sat
+  # at an ask of at most +0.086 / +0.063 m/s^2 -- BELOW this threshold, so it does not fire
+  # there at all and those measurements stand. What it does catch is the case the reviewers
+  # found and nobody had scored: on an ask sign-flip (lead pulls away, the most common follow
+  # transition) v1 held brake for up to 1.55 s while `pcm_off` ramped to a railed 5.0 m/s
+  # kickdown request. 0.20 == NIDEC_FRIC_MIN_AMP on purpose: the release fires exactly when
+  # the plan's positive ask is itself large enough to feel, so brake and gas can never
+  # disagree by more than one felt unit in either direction.
+  NIDEC_BRAKE_HOLD_RELEASE_T = 0.35
+  # s; debounce on the above (17 frames of the 50 Hz brake block). Without it the release
+  # would chop the bite on every zero crossing of the ask -- the chatter this whole change
+  # exists to remove. Chosen on a measured frontier, not by feel: an adversarial ask that
+  # chatters -0.8 <-> +0.30 with 0.2 s half-cycles splits the committed bite into 0.36 s and
+  # 0.24 s pieces at T = 0.20 (the defect, re-created) and into ONE 2.00 s bite at T = 0.35.
+  # The cost is the other side of the same frontier, measured on the 495-profile adversarial
+  # envelope: simultaneous wire gas + wire brake frames 850 (T=0.20) -> 1842 (0.35) -> 2774
+  # (0.50), against 5946 with no release at all and 32 on the pre-change code. Severity is
+  # capped at the felt floor in every arm -- the hold can never contribute more than 31
+  # counts (0.196 m/s^2) to such a frame -- so the axis that decides it is bite duration, and
+  # that is the deliverable ("no spammy light braking EVER"). Applications shorter than 1 s
+  # over the whole envelope: 324 (pre-change) -> 9 (no release) -> 44 (T=0.20) -> 30 (0.35)
+  # -> 13 (0.50). ⚠ Any T can be defeated by an ask whose positive half-cycle matches it;
+  # 0.35 s covers everything the 20 Hz jerk-limited planner has been observed to produce
+  # (the 2026-07-24 chatter ran at 0.22 Hz).
+
   BOSCH_ACCEL_MIN = -3.5  # m/s^2
   BOSCH_ACCEL_MAX = 2.0  # m/s^2
 
@@ -418,6 +517,25 @@ class CarControllerParams:
     # BIAS + BAND_TOP; past -PCM_OFF_MIN it silently clips and the growing-error signal
     # the whole design depends on flattens exactly where the downshift should fire.
     assert self.NIDEC_DESCENT_BIAS + self.NIDEC_DESCENT_BAND_TOP <= -self.NIDEC_MODEL_PCM_OFF_MIN
+
+    # Brake-channel staging lock (FINDINGS_cloop_ship_validation_2026-07-25): dropping
+    # sub-feel friction demand WITHOUT the committed dwell is the `clamp_amp` arm -- the
+    # ONLY candidate measured worse than the shipping code on both validation drives
+    # (invariant violations e7 24 / e9 45 and pulse trains 4 / 7, vs shipping 16 / 0).
+    # Removing the small demands alone just re-cuts what is left into more, shorter bites.
+    # The two knobs must move together; A/B the clamp on its own instead.
+    assert not (self.NIDEC_FRIC_MIN_AMP > 0.0 and self.NIDEC_BRAKE_MIN_DWELL <= 0.0)
+
+    # ---- WIRE LIMITS. These are panda's, not ours, and panda enforces them by DROPPING the
+    # whole frame (`tx = false`) with no openpilot-side consumer of safetyTxBlocked, so a
+    # violation is silent. Both were live defects on 2026-07-25: NIDEC_BRAKE_MAX - 1 is the
+    # value the brake path clamps to and it must equal HONDA_NIDEC_LONG_LIMITS.max_brake;
+    # NIDEC_GAS_MAX is commanded VERBATIM on 0x30C every active frame and `safety_max_limit_check`
+    # is a strict `>`, so 198 passes with ZERO counts of margin and 199 would silently kill the
+    # PCM speed servo exactly the way 256 killed 0x1FA. Do not raise either without changing
+    # panda first (opendbc/safety/modes/honda.h, HONDA_NIDEC_LONG_LIMITS).
+    assert self.NIDEC_BRAKE_MAX - 1 <= 255
+    assert self.NIDEC_GAS_MAX <= 198
 
     self.STEER_MAX = CP.lateralParams.torqueBP[-1]
     # mirror of list (assuming first item is zero) for interp of signed request

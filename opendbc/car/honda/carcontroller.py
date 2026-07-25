@@ -150,6 +150,9 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     self.bosch_last_gas = 0
 
     self.last_pcm_off = 0.0  # for rate-limiting in model-based NIDEC FF
+    self.brake_hold_frames = 0    # POST-gate committed-bite countdown (runs in the 50 Hz block)
+    self.brake_hold_ramp = 0.0    # rate-limited FELT-FLOOR the hold carries apply_brake up to
+    self.brake_hold_pos_frames = 0  # debounce for the "plan wants to go" early release
     self.dither_lfsr = 0x5A  # servo-ID dither PRBS-7 state (NIDEC_DITHER_* in values.py)
     self.a_des_lp = 0.0      # servo-aware FF: low-pass of a_des for the build-vs-ease latch
     self.po_build = False    # servo-aware FF: True while the accel request is building (onset)
@@ -189,6 +192,10 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     gas_pedal_force = 0.0
     actuators = CC.actuators
     hud_control = CC.hudControl
+    # NIDEC_ALT friction demand, hoisted so the 50 Hz brake block below can read it on frames
+    # where the NIDEC_ALT longActive branch did not run. The only other reads are inside that
+    # branch (the knee bias and the brake fraction), so this is a pure hoist -- no revert gate.
+    friction_ms2 = 0.0
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
 
@@ -274,6 +281,22 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
                                   0.0, 1.0))
         g_blend = self.params.NIDEC_MODEL_GRADE_G + (ACCELERATION_DUE_TO_GRAVITY - self.params.NIDEC_MODEL_GRADE_G) * w_passive
         hill_brake_ff = math.sin(self.pitch) * g_blend
+        # 2026-07-25: the grade credit may never push the COMMAND positive on a decel ask.
+        # pcm_off derives from a_des = actuators.accel + hill_brake_ff (below), so uphill the
+        # credit flipped a decel ask into a gas request: over 115 engaged min, mild-decel frames
+        # (accel in [-0.6,-0.1]) with pcm_off > 0 ran 3.2% at 1-2% grade, 18.2% at 2-3%, 49.4% at
+        # 3-4% and 75.6% above +4%. That BOTH commanded the PCM above vEgo against the ask AND
+        # grade-activated the `last_pcm_off > 0` friction guardrail below, which then zeroed the
+        # brake exactly where the ask needed serving. With this clamp the >+4% figure is 1.1%.
+        # Clamp to EXACTLY 0.0, not -eps: `a_des >= 0` branch membership is then unchanged, so
+        # servo-aware ease, DBO and the knee-guard latch stay bit-identical (verified over 115
+        # engaged min: kguard/dbo_sus differ on 0.000% of frames). The friction demand is unchanged
+        # by construction (a_des_b > 0 and a_des_b == 0 both give fric_demand = 0) -- also verified
+        # bit-identical, so this is a PURE command-side change.
+        # ⚠ deliberately inside `if CC.longActive:` -- during gas_override_long the po path uses the
+        # unblended sin(pitch)*GRADE_G above and must keep the servo under the driver's foot.
+        if self.params.NIDEC_GRADE_CREDIT_CLAMP and actuators.accel < 0.0:
+          hill_brake_ff = min(hill_brake_ff, -actuators.accel)
         # Honest Plant-B friction demand: cover decel beyond engine-brake + TRUE aero coastdown, scaled
         # by the MEASURED brake plant (3.07 m/s^2 at full apply_brake, not compute_gas_brake's 4.8).
         # Replaces both the /4.8 map and the downstream wind_brake subtraction (which together
@@ -320,6 +343,20 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
         if lift_guard_active and self.params.NIDEC_LIFT_HONEST_FRICTION and \
            (actuators.accel + hill_brake_ff < 0.0 or actuators.accel < 0.0):
           fric_demand = max(0.0, -actuators.accel)
+        # P6: brake too small to feel should not be used at all -- it is pad wear, a VSA pump cycle
+        # and a brake-light flicker for zero authority (0 of Adam's own 117 applications deliver
+        # < 0.20 m/s^2). This is ALSO the coast-authority rule: measured closed-throttle authority
+        # in gears 7-10 at 20-40 m/s is 0.13-0.25 m/s^2 grade-free (corpus, CAR_GAS <= 4 counts;
+        # the identified plant agrees at 0.176 in 10th @32 m/s) -- "too small to feel" and "smaller
+        # than coasting delivers anyway" are the same threshold on this car.
+        # POSITION IS LOAD-BEARING: before the descent block, so the floored fric_demand is what
+        # reaches `friction_ms2` below and therefore what gates the committed bite (a demand
+        # dropped here can no longer commit a dwell).
+        # NOTE this also feeds the descent-entry test below (fric_demand < DESCENT_FRIC_ENTRY);
+        # measured effect on descent coverage: +0.00 pp (quartet), +0.07 pp (trio).
+        # fric_demand is >= 0 by construction, so MIN_AMP = 0.0 is an exact revert.
+        if fric_demand < self.params.NIDEC_FRIC_MIN_AMP:
+          fric_demand = 0.0
         if self.params.NIDEC_DESCENT and not gas_override_long:
           v_err = CS.out.vEgo - hud_control.setSpeed  # >0 = over set (m/s)
           if self.descent and v_err >= self.params.NIDEC_DESCENT_BAND_TOP:
@@ -716,6 +753,93 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
           # but rate-limit lag and low-speed creep-brake can create simultaneous signals.
           if self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL and self.last_pcm_off > 0:
             apply_brake = 0
+          # POST-gate committed bite, v2 (2026-07-25 hardening). Two things at once, and the
+          # ORDER MATTERS:
+          #  * POST-gate -- a PRE-gate dwell does literally nothing (measured); the guardrail
+          #    just chops the held value;
+          #  * the hold's floor is the minimum FELT amplitude, a CONSTANT (`hold_floor`), never
+          #    the window peak. v1 latched `max(hold_target, apply_brake)` and never let the
+          #    floor fall, so the command floor for a whole 2 s dwell was the peak of the
+          #    window: a transient spike became a full-amplitude 2 s bite (~4x the delivered
+          #    speed loss), and at deep asks the peak-derived `hold_target` reached
+          #    NIDEC_BRAKE_MAX = 256, one count above panda's HONDA_NIDEC_LONG_LIMITS.max_brake
+          #    = 255, which makes `longitudinal_brake_checks` drop the WHOLE 0x1FA frame --
+          #    brake command AND brake lights -- silently (nothing consumes safetyTxBlocked).
+          #    Measured on the adversarial envelope: 579 of 950 sent frames dropped on an
+          #    ordinary -3.0 m/s^2 stop approach.
+          # The command therefore TRACKS the real demand upward and may relax back down to the
+          # felt floor, but never below it and never off, for the dwell. Because the floor is a
+          # constant 31 counts it cannot saturate the wire, cannot over-deliver by more than one
+          # felt unit, and cannot re-kick the VSA pump when a dwell re-commits under a steady
+          # demand (v1 walked its ramp back up through apply_brake every 2 s: 4 pump episodes
+          # per 8 s hold against baseline's 1).
+          # peak >= NIDEC_FRIC_MIN_AMP and duration >= NIDEC_BRAKE_MIN_DWELL still hold BY
+          # CONSTRUCTION for any application whose amplitude comes from `friction_ms2` (the
+          # commit is gated on friction_ms2 > 0, so the legacy sub-2.3 m/s `creep_brake` ramp --
+          # which can cross the knee with NO friction demand -- can no longer commit a dwell;
+          # its own 19-32 count command is untouched and is NOT covered by the felt floor).
+          # At a dwell >= 1.5 s pulse trains are impossible (onsets can no longer be 0.2-1.5 s
+          # apart). This block runs in the 50 Hz `frame % 2` branch, hence the 2 * DT_CTRL tick.
+          if self.params.NIDEC_BRAKE_MIN_DWELL > 0.0 and \
+             self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
+            # The ONE amplitude the hold can command: what the friction map returns at exactly
+            # NIDEC_FRIC_MIN_AMP. ROUND UP -- int() truncation gave 31 counts = 0.196 m/s^2, i.e.
+            # the floor sat one count BELOW the 0.20 threshold this whole change is built on, and
+            # 0.196 is also the modal commanded amplitude, so by follow_score's decode roughly half
+            # of all applications would have scored sub-feel (P6 sub-feel share 0.11 -> 0.29 vs
+            # Adam's 0.03). ceil -> 32 counts = 0.206 m/s^2, which clears the threshold under every
+            # decode in use (0.2063 plant model, 0.2071 follow_score.CB_TO_MS2). Both reverify
+            # agents flagged this independently. At MIN_AMP = 0 it degenerates to the knee, i.e.
+            # "keep the pads engaged for the dwell, with no felt floor".
+            hold_floor = math.ceil(np.clip(self.params.NIDEC_FRIC_MIN_AMP / self.params.NIDEC_MODEL_BRAKE_PLANT
+                                           + self.params.NIDEC_MODEL_BRAKE_KNEE, 0.0, 1.0)
+                                   * self.params.NIDEC_BRAKE_MAX)
+            # the hydraulic preload: the first count that can produce any decel at all
+            knee_counts = round(self.params.NIDEC_MODEL_BRAKE_KNEE * self.params.NIDEC_BRAKE_MAX)
+            # "the plan wants to go": a THRESHOLD plus a debounce, not a bare `accel > 0`, which
+            # would chop the bite on every zero crossing. The published rejection of an early
+            # release was measured on traces whose dwell overhang never exceeded ask +0.086 --
+            # below this threshold, so it does not fire there at all -- while the reviewers
+            # measured the hold surviving a ramp to +0.6 with pcm_off railed at 5.0 m/s.
+            if self.params.NIDEC_BRAKE_HOLD_RELEASE_A > 0.0 and \
+               actuators.accel >= self.params.NIDEC_BRAKE_HOLD_RELEASE_A:
+              self.brake_hold_pos_frames += 1
+            else:
+              self.brake_hold_pos_frames = 0
+            wants_to_go = self.brake_hold_pos_frames >= \
+                          max(1, int(self.params.NIDEC_BRAKE_HOLD_RELEASE_T / (2 * DT_CTRL)))
+            # Releases: disengagement / gas-override handoff (longActive is False there too, and
+            # panda blocks 0x1FA while the pedal is down); the descent latch, whose entire point
+            # is that the PCM downshift serves the band and friction stays OFF (friction_ms2 is
+            # forced to 0 in-latch, so holding a bite through it inverts the feature); and the
+            # plan asking to accelerate.
+            if (not CC.longActive) or self.descent or wants_to_go:
+              self.brake_hold_frames, self.brake_hold_ramp = 0, 0.0
+            else:
+              if apply_brake > knee_counts and friction_ms2 > 0.0 and self.brake_hold_frames <= 0:
+                self.brake_hold_frames = int(self.params.NIDEC_BRAKE_MIN_DWELL / (2 * DT_CTRL))
+                # start the floor where the command already is, and do NOT advance it on this
+                # frame, so the commit itself is a strict no-op on the wire: the floor can only
+                # ever stop the command falling, never step it up
+                self.brake_hold_ramp = float(min(apply_brake, hold_floor))
+              else:
+                self.brake_hold_frames = max(self.brake_hold_frames - 1, 0)
+                if self.brake_hold_frames > 0:
+                  # same up-rate as the demand path's own rate limit (line ~418), so the hold
+                  # adds no jerk the friction channel could not already produce
+                  self.brake_hold_ramp = min(float(hold_floor), self.brake_hold_ramp
+                                             + 3.0 * (2 * DT_CTRL) * self.params.NIDEC_BRAKE_MAX)
+              if self.brake_hold_frames > 0:
+                apply_brake = max(apply_brake, int(self.brake_hold_ramp))
+              else:
+                self.brake_hold_ramp = 0.0
+          # THE wire clamp. Last thing to touch apply_brake before the pump hysteresis, the
+          # packer, self.apply_brake_last and self.brake, so no present or future path can put a
+          # value on 0x1FA that panda will reject. `NIDEC_BRAKE_MAX - 1` == panda's max_brake
+          # (255); the check there is `desired_brake > max_brake` -> tx = false -> the frame is
+          # dropped whole. A no-op at every knob's off value (the clip at line ~749 already
+          # bounds the pre-existing path), which is what keeps the exact-revert golden valid.
+          apply_brake = int(np.clip(apply_brake, 0, self.params.NIDEC_BRAKE_MAX - 1))
           pump_on, self.last_pump_ts = brake_pump_hysteresis(apply_brake, self.apply_brake_last, self.last_pump_ts, ts)
 
           pcm_override = True
